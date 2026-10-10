@@ -134,4 +134,8 @@ export function recognizeFace(formData) {
   return request("/face/recognize", { method: "POST", body: formData });
 }
 
+export function getHealth() {
+  return request("/health");
+}
+
 export { API_BASE_URL };

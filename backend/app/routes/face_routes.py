@@ -22,6 +22,7 @@ from app.services.face_service import ENROLLMENT_STEPS, build_gallery, detect_fa
 from app.services.quality_service import MESSAGES, check_pose, check_quality, scan_problem
 from app.services.tracking_service import assign_tracks, challenge_entry, observe, progress, track_score, verify
 from app.utils.image_utils import decode_base64_image, decode_image_bytes
+from app.utils import timing
 from app.utils.scan_log import log_decision
 from app.utils.time_utils import today_local
 
@@ -72,9 +73,15 @@ async def use_models(function, *args):
 async def read_face_payload(request: Request):
     content_type = request.headers.get("content-type", "")
     if "multipart/form-data" in content_type:
-        form = await request.form()
-        file = form.get("image") or form.get("file")
-        image = decode_image_bytes(await file.read()) if file is not None else decode_base64_image(str(form.get("image_base64") or ""))
+        with timing.stage("read"):
+            form = await request.form()
+            file = form.get("image") or form.get("file")
+            raw = await file.read() if file is not None else None
+        with timing.stage("decode"):
+            image = decode_image_bytes(raw) if raw is not None else decode_base64_image(str(form.get("image_base64") or ""))
+        # What the browser measured for this frame and for the answer to its previous one, so the
+        # time spent outside this server (camera, network) can be told apart from the time in it.
+        timing.note(upload_bytes=len(raw) if raw is not None else None, client_capture_ms=client_ms(form.get("client_capture_ms")), client_roundtrip_ms=client_ms(form.get("client_roundtrip_ms")))
         return {
             "person_id": int(form.get("person_id")) if form.get("person_id") else None,
             "current_step": str(form.get("current_step") or "front"),
@@ -86,7 +93,10 @@ async def read_face_payload(request: Request):
             "scanner_id": form.get("scanner_id"),
             "image": image,
         }
-    body = await request.json()
+    with timing.stage("read"):
+        body = await request.json()
+    with timing.stage("decode"):
+        image = decode_base64_image(body.get("image_base64") or "")
     return {
         "person_id": body.get("person_id"),
         "current_step": body.get("current_step", "front"),
@@ -96,8 +106,17 @@ async def read_face_payload(request: Request):
         "batch_id": body.get("batch_id"),
         "device_name": body.get("device_name"),
         "scanner_id": body.get("scanner_id"),
-        "image": decode_base64_image(body.get("image_base64") or ""),
+        "image": image,
     }
+
+
+def client_ms(value):
+    # A duration reported by the browser. Only ever logged, so anything that is not a sane number is dropped.
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return None
+    return round(value, 1) if 0 <= value < 600_000 else None
 
 
 @router.get("/enrollment/users")
@@ -211,6 +230,20 @@ def moved(previous, box):
 
 @router.post("/enrollment/frame")
 async def enrollment_frame(request: Request, db: Session = Depends(get_db)):
+    timer = timing.start("enroll")
+    outcome = "error"
+    try:
+        result = await handle_enrollment_frame(request, db)
+        outcome = "accepted" if result.get("accepted") else "holding" if result.get("holding") else str(result.get("quality_status") or "refused")
+        return result
+    except HTTPException as exc:
+        outcome = f"http_{exc.status_code}"
+        raise
+    finally:
+        timing.finish(timer, outcome)
+
+
+async def handle_enrollment_frame(request, db):
     payload = await read_face_payload(request)
     step = payload["current_step"]
     print("received person_id", payload["person_id"], "current_step", step)
@@ -260,7 +293,9 @@ async def capture_pose(db, person, enrollment, state, payload):
     except RuntimeError as exc:
         return refuse(str(exc), "embedding_failed")
 
-    quality = check_quality(image, [face["box"] for face in faces], reject_sunglasses=True)
+    timing.note(width=int(image.shape[1]), height=int(image.shape[0]), faces=len(faces), step=step)
+    with timing.stage("quality"):
+        quality = check_quality(image, [face["box"] for face in faces], reject_sunglasses=True)
     print("quality result", quality)
     if not quality["ok"]:
         return refuse(quality["warning"], quality["quality_status"])
@@ -354,7 +389,8 @@ async def capture_pose(db, person, enrollment, state, payload):
     next_step = None if completed else steps[completed_steps]
     if completed:
         try:
-            save_enrollment(db, person, enrollment, state["samples"], steps, state["mode"])
+            with timing.stage("write"):
+                save_enrollment(db, person, enrollment, state["samples"], steps, state["mode"])
         except HTTPException:
             # Refused for good (poses missing or invalid, or this face belongs to someone else).
             db.rollback()
@@ -507,6 +543,12 @@ def enrollment_status(person_id: int, db: Session = Depends(get_db)):
     return {"success": True, "message": "Enrollment status fetched", "data": face_enrollment_data(latest_enrollment(db, person_id))}
 
 
+@router.get("/timings")
+def timings():
+    # Median, p95 and p99 of the latest face requests of this process, per stage. Numbers only.
+    return {"success": True, "message": "Timings fetched", "data": timing.summarize(list(timing.recent))}
+
+
 def load_session(db, session_id):
     # Checked every few seconds rather than every frame; a stopped session is noticed within that time.
     # (Before a record is written the session is read again, see mark_for_session.)
@@ -578,18 +620,34 @@ def mark_for_session(db, session, person_id, confidence, device_name):
 @router.post("/recognize")
 async def recognize(request: Request, db: Session = Depends(get_db)):
     global scans_in_flight
-    payload = await read_face_payload(request)
-    image = payload["image"]
-    if image is None:
-        return {"success": False, "message": "Invalid image", "details": {}}
-    if scans_in_flight >= MAX_SCANS_IN_FLIGHT:
-        # Said plainly instead of queueing: this frame was not looked at, nobody in it was checked.
-        return {"success": True, "recognized": False, "status": "busy", "message": "The server is busy with earlier frames. This frame was skipped.", "faces": []}
-    scans_in_flight += 1
+    timer = timing.start("scan")
+    outcome = "error"
     try:
-        return await scan_frame(db, payload, image)
+        payload = await read_face_payload(request)
+        image = payload["image"]
+        if image is None:
+            outcome = "invalid_image"
+            return {"success": False, "message": "Invalid image", "details": {}}
+        if scans_in_flight >= MAX_SCANS_IN_FLIGHT:
+            # Said plainly instead of queueing: this frame was not looked at, nobody in it was checked.
+            outcome = "busy"
+            return {"success": True, "recognized": False, "status": "busy", "message": "The server is busy with earlier frames. This frame was skipped.", "faces": []}
+        timing.note(in_flight=scans_in_flight + 1)
+        scans_in_flight += 1
+        try:
+            response = await scan_frame(db, payload, image)
+        finally:
+            scans_in_flight -= 1
+        outcome = scan_outcome(response)
+        return response
     finally:
-        scans_in_flight -= 1
+        timing.finish(timer, outcome)
+
+
+def scan_outcome(response):
+    # The frame's verdicts as one short word list for the timing log, e.g. "pending+unknown".
+    results = sorted({str(face.get("result")) for face in response.get("faces", [])})
+    return "+".join(results) if results else str(response.get("status"))
 
 
 async def scan_frame(db, payload, image):
@@ -601,8 +659,10 @@ async def scan_frame(db, payload, image):
 
     height, width = image.shape[:2]
     frame = {"width": int(width), "height": int(height)}
+    timing.note(width=int(width), height=int(height), faces=len(faces))
 
-    session = load_session(db, payload["session_id"]) if payload["session_id"] else None
+    with timing.stage("session"):
+        session = load_session(db, payload["session_id"]) if payload["session_id"] else None
     course_id = session.course_id if session else payload["course_id"]
     batch_id = session.batch_id if session else payload["batch_id"]
     active = bool(session and session.status == "active")
@@ -612,7 +672,8 @@ async def scan_frame(db, payload, image):
     tracks = assign_tracks(scanner, [face["box"] for face in faces], now)
     if not faces:
         return {"success": True, "recognized": False, "status": "no_face", "message": MESSAGES["no_face"], "frame": frame, "faces": [], "processing_ms": int((clock() - started) * 1000)}
-    gallery = load_gallery(db, course_id, batch_id)
+    with timing.stage("gallery"):
+        gallery = load_gallery(db, course_id, batch_id)
 
     # Every face is judged on its own from here on. A face that is refused at any step is finished
     # with a reason; it never stops, or lends anything to, the other faces in the frame.
@@ -632,11 +693,13 @@ async def scan_frame(db, payload, image):
             continue
         # A face too dark, burnt out or smeared to trust is not matched, so it can neither be
         # named nor count towards anyone's confirmation.
-        problem = scan_problem(gray, face["box"])
+        with timing.stage("quality"):
+            problem = scan_problem(gray, face["box"])
         if problem:
             item.update(status=problem, result="low_quality", message=MESSAGES[problem])
             continue
-        answer = identify(face["embedding"], gallery)
+        with timing.stage("match"):
+            answer = identify(face["embedding"], gallery)
         item["_answer"], item["_track"], item["_turn"] = answer, track, face.get("turn")
         if answer["status"] == "matched":
             named.setdefault(answer["embedding"].person_id, []).append(item)
@@ -711,7 +774,9 @@ async def scan_frame(db, payload, image):
                 # Identity (several looks, margin, average score), liveness on every one of those
                 # looks, and the challenge answered on this same face: only now is a record written.
                 item.pop("confirming")
-                item.update(mark_for_session(db, session, item["person_id"], track_score(track), payload["device_name"]))
+                with timing.stage("write"):
+                    marked = mark_for_session(db, session, item["person_id"], track_score(track), payload["device_name"])
+                item.update(marked)
                 if item["result"] == "verified":
                     item["message"] = f"{name} marked {item['attendance_status']}"
             elif state == "pending":
