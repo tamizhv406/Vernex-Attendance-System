@@ -5,10 +5,13 @@ import cv2
 import numpy as np
 
 from app.config import settings
+from app.utils import timing
 
 DeepFace = None
 DeepFaceImportError = None
 liveness_models = None
+# True once warm_up has loaded and run every model. /health reports it.
+models_ready = False
 
 
 def get_deepface():
@@ -18,6 +21,7 @@ def get_deepface():
     if DeepFaceImportError is not None:
         raise RuntimeError(f"DeepFace failed to import: {DeepFaceImportError}")
     try:
+        limit_tensorflow_threads()
         from deepface import DeepFace as ImportedDeepFace
     except Exception as exc:
         DeepFaceImportError = exc
@@ -28,6 +32,19 @@ def get_deepface():
     except Exception as exc:
         print("recognition model runs uncompiled (slower):", exc)
     return DeepFace
+
+
+def limit_tensorflow_threads():
+    # Must happen before TensorFlow runs anything; see FACE_TF_THREADS in config.py for the measurements.
+    if settings.face_tf_threads <= 0:
+        return
+    import tensorflow as tf
+
+    try:
+        tf.config.threading.set_intra_op_parallelism_threads(settings.face_tf_threads)
+    except RuntimeError as exc:
+        # Something else in this process already started TensorFlow. The models still work, at its default.
+        print("TensorFlow thread limit not applied:", exc)
 
 
 def compile_recognition_model():
@@ -108,11 +125,12 @@ def liveness_scores(image, boxes):
         from deepface.models.spoofing.FasNetUtils import crop
 
         votes = np.zeros((len(boxes), 3))
-        for model, scale in get_liveness_models():
-            crops = np.stack([crop(image, tuple(box), scale, 80, 80) for box in boxes]).astype(np.float32)
-            logits = model(tf.constant(crops)).numpy()
-            exps = np.exp(logits - logits.max(axis=1, keepdims=True))
-            votes += exps / exps.sum(axis=1, keepdims=True)
+        with timing.stage("liveness", model=True):
+            for model, scale in get_liveness_models():
+                crops = np.stack([crop(image, tuple(box), scale, 80, 80) for box in boxes]).astype(np.float32)
+                logits = model(tf.constant(crops)).numpy()
+                exps = np.exp(logits - logits.max(axis=1, keepdims=True))
+                votes += exps / exps.sum(axis=1, keepdims=True)
     except Exception as exc:
         raise RuntimeError(f"Liveness check failed: {exc}") from exc
     # Column 1 is the "real face" class; the two models' votes are averaged.
@@ -180,8 +198,9 @@ def locate_faces(image):
     try:
         from deepface.modules import modeling
 
-        detector = modeling.build_model(task="face_detector", model_name=settings.face_detector)
-        found = [area for area in detector.detect_faces(image) if float(area.confidence or 0) >= settings.face_detection_confidence]
+        with timing.stage("detect", model=True):
+            detector = modeling.build_model(task="face_detector", model_name=settings.face_detector)
+            found = [area for area in detector.detect_faces(image) if float(area.confidence or 0) >= settings.face_detection_confidence]
     except Exception as exc:
         raise RuntimeError(f"Face detection failed: {exc}") from exc
     return [{
@@ -203,8 +222,11 @@ def embed_faces(image, faces):
 
         size = modeling.build_model(task="facial_recognition", model_name=settings.face_model).input_shape
         areas = [face.pop("area") for face in todo]
-        crops = [face_crop(image, (area.x, area.y, area.w, area.h), area.left_eye, area.right_eye, size) for area in areas]
-        for face, embedding in zip(todo, embed_crops(crops)):
+        with timing.stage("crop"):
+            crops = [face_crop(image, (area.x, area.y, area.w, area.h), area.left_eye, area.right_eye, size) for area in areas]
+        with timing.stage("embed", model=True):
+            vectors = embed_crops(crops)
+        for face, embedding in zip(todo, vectors):
             face["embedding"] = embedding
     except Exception as exc:
         raise RuntimeError(f"Face detection failed: {exc}") from exc
@@ -256,10 +278,20 @@ def head_turn(area):
 
 def warm_up():
     # Loading the models takes around half a minute, so do it at startup instead of on the first scan.
+    global models_ready
     try:
         blank = np.zeros((160, 160, 3), dtype=np.uint8)
         detect_faces(blank)
+        # A blank frame has no face in it, so the line above loads the embedding model without ever
+        # running it, and its first run is slow (4.0 s and 6.1 s measured). Run it once here, or the first
+        # student to step in front of the camera after a restart pays for it.
+        from deepface.modules import modeling
+
+        height, width = modeling.build_model(task="facial_recognition", model_name=settings.face_model).input_shape
+        with timing.stage("embed", model=True):
+            embed_crops([np.zeros((height, width, 3), dtype=np.uint8)])
         check_liveness(blank, [(40, 40, 80, 80)])
+        models_ready = True
         print("face models ready")
     except Exception as exc:
         print("face models failed to load:", exc)
@@ -361,5 +393,11 @@ model_lock = threading.Lock()
 
 
 def run_models(function, *args):
-    with model_lock:
+    # The wait for the lock is timed on its own: it is time spent queueing behind other frames,
+    # not time any model needed.
+    with timing.stage("lock_wait"):
+        model_lock.acquire()
+    try:
         return function(*args)
+    finally:
+        model_lock.release()

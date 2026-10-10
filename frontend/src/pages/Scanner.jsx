@@ -30,8 +30,12 @@ export default function AttendanceScanner({ data }) {
     // Live loop: grab a frame from the camera, let the backend detect and recognize every face in it,
     // then draw the boxes. The backend marks attendance itself, so one request per frame is enough.
     let stopped = false;
+    // How long the previous frame took to come back, sent along with the next one so the backend's
+    // timing log shows the time spent outside it (network, this device) as well as inside.
+    let roundtrip = null;
     const run = async () => {
       while (!stopped) {
+        const captureStarted = performance.now();
         const shot = await camera.capture();
         if (shot) {
           try {
@@ -40,7 +44,11 @@ export default function AttendanceScanner({ data }) {
             form.append("session_id", activeSession.id);
             form.append("device_name", "frontend-scanner");
             form.append("scanner_id", scannerId.current);
+            form.append("client_capture_ms", (performance.now() - captureStarted).toFixed(1));
+            if (roundtrip !== null) form.append("client_roundtrip_ms", roundtrip.toFixed(1));
+            const sent = performance.now();
             const result = await recognizeFace(form);
+            roundtrip = performance.now() - sent;
             if (stopped) return;
             if (result.status === "busy") {
               // The frame was not looked at, so there is nothing to draw and nobody was checked.

@@ -125,6 +125,8 @@ Settings in `backend/.env`:
 | `FACE_LIVENESS_CONFIDENT` | `0.70` | From this score a face is live; in between it is "uncertain" and never counted. Not validated on your camera yet, see Anti-spoofing |
 | `FACE_CHALLENGE` | `always` | Head-turn instruction before marking. `off` leaves the passive check alone, which is much weaker |
 | `FACE_SCAN_LOG` | `true` | Write scanner decisions to `logs/recognition.log` |
+| `FACE_TIMING_LOG` | `true` | Write how long each stage of every face request took to `logs/timing.log` (durations, sizes and outcomes only). `GET /face/timings` gives the median, p95 and p99 |
+| `FACE_TF_THREADS` | `4` | Threads TensorFlow may use per operation. `0` is TensorFlow's default, which made one-face frames about twice as slow on the laptop this was measured on. Measure with `scripts/benchmark_latency.py --tf-threads N` |
 | `FACE_DETECTOR` | `yolov8n` | DeepFace detector name |
 | `FACE_MODEL` | `Facenet512` | Changing it requires enrolling everyone again |
 | `FACE_NORMALIZATION` | `Facenet2018` | Input scaling for the model; changing it also requires enrolling again |

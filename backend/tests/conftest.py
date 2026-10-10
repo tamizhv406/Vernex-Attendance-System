@@ -7,6 +7,7 @@ import os
 
 os.environ.setdefault("DATABASE_URL", "sqlite:///:memory:")
 os.environ["FACE_SCAN_LOG"] = "false"
+os.environ["FACE_TIMING_LOG"] = "false"
 # The tests fix their own settings, whatever backend/.env says on this machine. Enrollment tests
 # use the full five poses unless a test asks for a quick enrollment.
 os.environ.update(FACE_ENROLL_MODE="guided", FACE_ENROLL_QUICK_STEPS="front,left,right", FACE_ENROLL_BURST_FRAMES="3")

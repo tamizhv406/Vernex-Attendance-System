@@ -71,6 +71,18 @@ class Settings:
     # Write scanner decisions (who, score, runner-up, why refused) to logs/recognition.log.
     # Numbers and ids only: no camera frames and no face vectors.
     face_scan_log: bool = os.getenv("FACE_SCAN_LOG", "true").lower() == "true"
+    # Threads TensorFlow may use inside one operation (the embedding and liveness models). 0 leaves
+    # TensorFlow's own default, one per logical processor. Measured on a 12-thread laptop processor
+    # (2 fast cores, 8 slow ones) with scripts/benchmark_latency.py --tf-threads 0 against 4, runs
+    # taking turns: with the default a frame with ONE unmarked face, which is every enrollment frame
+    # and most scanner frames, took 711-756 ms; with 4 threads 332-394 ms (embedding 343-368 -> 130-142,
+    # liveness 220-236 -> 54-59). Frames with two faces were 10-20% slower with the limit and frames
+    # with five 5-7% slower. Vectors and liveness scores are the same either way (largest difference
+    # 0.000003). On another machine, measure before changing it.
+    face_tf_threads: int = int(os.getenv("FACE_TF_THREADS", "4"))
+    # Write how long each stage of every face request took to logs/timing.log.
+    # Durations, sizes and outcomes only: no camera frames, no face vectors, no names.
+    face_timing_log: bool = os.getenv("FACE_TIMING_LOG", "true").lower() == "true"
     google_script_url: str = os.getenv("GOOGLE_SCRIPT_URL", "")
     default_timezone: str = os.getenv("DEFAULT_TIMEZONE", "Asia/Kolkata")
 

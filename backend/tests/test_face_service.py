@@ -102,3 +102,38 @@ def test_centroid_matching_is_not_best_of_many(monkeypatch):
     assert best_match(stranger, build_gallery(stored)) is not None
     monkeypatch.setattr(settings, "face_gallery", "centroid")
     assert best_match(stranger, build_gallery(stored)) is None
+
+
+def test_the_tensorflow_thread_limit_follows_the_setting(monkeypatch):
+    import sys
+    from types import SimpleNamespace
+
+    from app.config import settings
+    from app.services import face_service
+
+    asked = []
+    fake = SimpleNamespace(config=SimpleNamespace(threading=SimpleNamespace(set_intra_op_parallelism_threads=asked.append)))
+    monkeypatch.setitem(sys.modules, "tensorflow", fake)
+
+    monkeypatch.setattr(settings, "face_tf_threads", 4)
+    face_service.limit_tensorflow_threads()
+    monkeypatch.setattr(settings, "face_tf_threads", 0)
+    face_service.limit_tensorflow_threads()
+
+    assert asked == [4]
+
+
+def test_a_thread_limit_that_comes_too_late_does_not_stop_the_models(monkeypatch):
+    import sys
+    from types import SimpleNamespace
+
+    from app.config import settings
+    from app.services import face_service
+
+    def refuse(count):
+        raise RuntimeError("Intra op parallelism cannot be modified after initialization.")
+
+    monkeypatch.setitem(sys.modules, "tensorflow", SimpleNamespace(config=SimpleNamespace(threading=SimpleNamespace(set_intra_op_parallelism_threads=refuse))))
+    monkeypatch.setattr(settings, "face_tf_threads", 4)
+
+    face_service.limit_tensorflow_threads()

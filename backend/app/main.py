@@ -11,6 +11,7 @@ from app.database import get_db
 from app.models import attendance, course, face_embedding, person, sync_log, timing
 from app.routes import attendance_routes, course_routes, face_routes, person_routes, sheet_routes, timing_routes
 from app.schema import init_database_schema
+from app.services import face_service
 from app.services.face_service import warm_up
 
 app = FastAPI(title="Vernex Smart Attendance AI", version="0.1.0")
@@ -49,7 +50,7 @@ def root():
 @app.get("/health")
 def health(db: Session = Depends(get_db)):
     db.execute(text("SELECT 1"))
-    return {"success": True, "message": "Healthy", "data": {"database": "connected"}}
+    return {"success": True, "message": "Healthy", "data": {"database": "connected", "face_models": "ready" if face_service.models_ready else "loading"}}
 
 
 app.include_router(person_routes.router)

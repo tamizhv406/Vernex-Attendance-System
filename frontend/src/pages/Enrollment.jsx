@@ -109,12 +109,15 @@ export default function FaceEnrollment({ data }) {
     // seen a few good frames in a row, and answers "hold still" for the ones before that.
     let stopped = false;
     let failures = 0;
+    // The previous frame's round trip, reported with the next frame for the backend's timing log.
+    let roundtrip = null;
     const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
     const run = async () => {
       // The first pose starts the moment the camera delivers a picture: the student is already
       // looking at it. Later poses leave a moment to read the new instruction and move.
       if (step !== steps[0]) await wait(1200);
       while (!stopped) {
+        const captureStarted = performance.now();
         const shot = await camera.capture();
         // No picture yet means the camera is still starting, so look again soon. After a refused
         // frame, a short pause is enough: the backend answers those quickly.
@@ -125,7 +128,10 @@ export default function FaceEnrollment({ data }) {
             form.append("image", shot.blob, "frame.jpg");
             form.append("person_id", selected.id);
             form.append("current_step", step);
-            const result = await sendEnrollmentFrame(form);
+            form.append("client_capture_ms", (performance.now() - captureStarted).toFixed(1));
+            if (roundtrip !== null) form.append("client_roundtrip_ms", roundtrip.toFixed(1));
+            const sent = performance.now();
+            const result = await sendEnrollmentFrame(form).finally(() => { roundtrip = performance.now() - sent; });
             if (stopped) return;
             failures = 0;
             if (result.accepted) {
