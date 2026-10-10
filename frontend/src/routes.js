@@ -31,8 +31,8 @@ export const PAGES = {
 
 export const NAV_GROUPS = [
   { label: "Overview", items: ["dashboard"] },
-  { label: "Attendance", items: ["scanner", "enrollment", "reports"] },
-  { label: "Manage", items: ["students", "staff", "members", "courses", "batches"] },
+  { label: "Manage", items: ["courses", "batches", "students", "staff", "members"] },
+  { label: "Attendance", items: ["enrollment", "scanner", "reports"] },
   { label: "System", items: ["settings"] }
 ];
 
