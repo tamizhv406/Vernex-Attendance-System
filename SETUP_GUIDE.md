@@ -130,6 +130,9 @@ The first time, Windows may ask whether Node.js may use the network — click **
 ## 6. Using the app
 
 1. **Courses → Batches → Students** — create a course, a batch under it, then students.
+   To add many at once, press **Upload** on any of these pages (and on Staff and Members), download
+   the template, fill it in and upload it. Excel (`.xlsx`) and CSV files are accepted; rows with a
+   problem are listed with their row number and the rest are imported. Details are in `README.md`.
 2. **Face Enrollment** — pick course, batch and student, press *Start Enrollment*, and follow the five
    guided shots (front, left, right, close, far). Turn the head about 15° for left/right.
 3. **Attendance Scanner** — pick course and batch, press *Start Session*, point the camera at the class.
@@ -153,12 +156,16 @@ More detail (recognition settings, accuracy) is in `README.md`.
 | Camera doesn't start on phone | Use the **https://** link, accept the certificate, allow camera permission in browser settings |
 | Frontend shows network/API errors | The backend window must be running and show `face models ready` |
 | Face always "Unknown" | Re-enroll in good light, face fully visible, follow all five shots |
+| Upload says Excel files need `openpyxl` | The backend was updated without its new package. Run `setup.bat` again (or `backend\.venv\Scripts\python -m pip install -r backend\requirements.txt`), then restart the backend. CSV files work in the meantime |
+| A contact number is refused | It must be 10 digits. Spaces, hyphens and `+91` in front are accepted; other country codes, letters and symbols are not |
 
-Run the backend tests (optional):
+Run the tests (optional):
 
 ```powershell
 cd backend
 .\.venv\Scripts\python -m pytest
+cd ..\frontend
+npm test
 ```
 
 > Security note: the login page does not check passwords and the API has no authentication.

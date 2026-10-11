@@ -62,10 +62,6 @@ export function titleCase(value) {
   return String(value || "").replace(/_/g, " ").replace(/\w\S*/g, text => text.charAt(0).toUpperCase() + text.slice(1).toLowerCase());
 }
 
-export function onlyNumbers(value) {
-  return value.replace(/\D/g, "");
-}
-
 export function formatTime(value) {
   if (!value) return "-";
   const date = new Date(value);

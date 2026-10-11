@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.database import get_db
 from app.models import attendance, course, face_embedding, person, sync_log, timing
-from app.routes import attendance_routes, course_routes, face_routes, person_routes, sheet_routes, timing_routes
+from app.routes import attendance_routes, course_routes, face_routes, import_routes, person_routes, sheet_routes, timing_routes
 from app.schema import init_database_schema
 from app.services import face_service
 from app.services.face_service import warm_up
@@ -53,6 +53,8 @@ def health(db: Session = Depends(get_db)):
     return {"success": True, "message": "Healthy", "data": {"database": "connected", "face_models": "ready" if face_service.models_ready else "loading"}}
 
 
+# First, so that "/users/upload" and "/courses/upload" can never be taken for "/users/{person_id}" or "/courses/{course_id}".
+app.include_router(import_routes.router)
 app.include_router(person_routes.router)
 app.include_router(person_routes.legacy_router)
 app.include_router(course_routes.router)

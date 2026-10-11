@@ -93,6 +93,12 @@ http://localhost:8000/health
 
 - `GET /`
 - `GET /health`
+- `GET /courses`, `POST /courses/create`, `GET|PUT|DELETE /courses/{course_id}`
+- `GET /batches`, `POST /batches/create`, `GET|PUT|DELETE /batches/{batch_id}`
+- `GET /users`, `POST /users/create`, `GET|PUT|DELETE /users/{person_id}`
+- `POST /courses/upload`, `GET /courses/upload/template`
+- `POST /batches/upload`, `GET /batches/upload/template`
+- `POST /users/upload?person_type=student|admin|member`, `GET /users/upload/template?person_type=...`
 - `POST /people/create`
 - `GET /people`
 - `GET /people/{person_id}`
@@ -116,3 +122,29 @@ http://localhost:8000/health
 - `GET /sheet/status`
 
 The face endpoints run DeepFace (YOLOv8 detector + Facenet512). See the root `README.md` for the full run guide, workflow and face settings.
+
+## Answers and errors
+
+A request that succeeds is answered `{"success": true, "message": "...", "data": ...}`. One that is
+refused is answered with the HTTP status and `{"detail": "why"}`:
+
+- `400` a value that cannot be used: an empty course code, a contact number that is not ten digits
+  (`"Contact number: Phone number must have exactly 10 digits (found 3)"`), an upload that cannot be
+  read as a whole (wrong type, too large, a required column missing)
+- `404` the course, batch or person does not exist
+- `409` it would be a duplicate: `"Course code already exists"`, `"Batch already exists under this course"`,
+  `"ID already exists"` (a person's ID, across students, staff and members)
+
+## Bulk upload
+
+`POST /courses/upload`, `/batches/upload` and `/users/upload?person_type=...` take a `.xlsx` or
+`.csv` file in a multipart field named `file` (5 MB, 2,000 data rows). Valid rows are saved, the
+others are reported with their row number, column, value and reason. The column names, the rules
+for contact numbers and what the answer contains are in the root `README.md`, under "Bulk upload
+from Excel or CSV". Reading and writing `.xlsx` needs `openpyxl` (in `requirements.txt`).
+
+## Tests
+
+```powershell
+.venv\Scripts\python -m pytest
+```

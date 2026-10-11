@@ -11,4 +11,6 @@ numpy
 deepface==0.0.101
 tf-keras
 ultralytics
+openpyxl
 pytest
+httpx2
