@@ -84,6 +84,128 @@ calls to the backend, so port 8000 does not need to be reachable from the phone.
    and day, enforced by the database.
 5. **Stop Session**, then see **Reports** for the records by date, course and batch.
 
+Courses, batches and people can also be added many at a time from a spreadsheet: see
+"Bulk upload" below.
+
+Editing: the pencil on a row of Courses or Batches opens that record in the form above the list.
+Changing a batch's **Course** moves the batch, and the people assigned to it move with it (the form
+says how many before you save). Renaming a course or a batch changes the name shown for its people
+from then on. Attendance that is already recorded keeps the course, batch and names it was taken under.
+
+## Bulk upload from Excel or CSV
+
+The Courses, Batches, Students, Staff and Members pages each have an **Upload** button. It takes
+one `.xlsx` or `.csv` file of up to **5 MB** and **2,000 data rows**.
+
+1. Press **Upload**, then **Download template**. The template is a workbook with the right column
+   names in its first sheet (which is otherwise empty) and an `Instructions` sheet that explains
+   every column and shows made-up example rows.
+2. Type or paste your rows under the header row and save.
+3. Choose the file and press **Upload**.
+
+Upload courses first, then batches, then people: a batch needs its course to exist, and a student
+needs both.
+
+### Columns
+
+The first row of the file must hold the column names. Capitals, spaces and hyphens do not matter
+(`Course Code`, `course-code` and `course_code` are the same column), the order of the columns does
+not matter, and in a workbook only the first sheet is read.
+
+| Upload | Required columns | Optional columns |
+| --- | --- | --- |
+| Courses | `course_code`, `course_name` | `description` |
+| Batches | `batch_name`, `course_code` | `batch_level` |
+| Students | `student_id`, `full_name`, `parent_contact`, `course_code`, `batch_name` | `parent_name`, `level_class`, `joining_date`, `notes` |
+| Staff | `staff_id`, `full_name`, `contact_number` | `email`, `course_code`, `batch_name`, `level_class`, `joining_date`, `notes` |
+| Members | `member_id`, `full_name`, `contact_number` | `email`, `course_code`, `batch_name`, `level_class`, `joining_date`, `notes` |
+
+- `course_code` is saved in capital letters and matched without regard to case. In the Batches,
+  Students, Staff and Members files it must be the code of a course that already exists.
+- `batch_name` in a people file must be a batch **of that course**. For staff and members both are
+  optional, but a `batch_name` needs its `course_code`.
+- `student_id`, `staff_id` and `member_id` are one kind of ID: no two people may share one, whatever
+  they are, and `stu-001` is the same ID as `STU-001`.
+- `parent_contact` and `contact_number` follow the rules under "Contact numbers" below.
+- `joining_date` is written `2024-06-15` (year-month-day). `15-06-2024`, `15/06/2024` and
+  `15-Jun-2024` are read as day-month-year, and a real Excel date cell is read as it is. Anything
+  else, `06/15/2024` and two-digit years included, is reported instead of guessed.
+- A number typed into Excel is read as the number it shows: `9876543210`, never `9876543210.0`.
+  Excel drops leading zeros and a leading `+` from cells it treats as numbers; the template's
+  columns are formatted as text so that what you type is kept.
+- Any other column is not read. The result names the columns that were left out.
+
+### What happens to a file
+
+**The file as a whole is checked first.** A file of another type, an empty or damaged file, a file
+over the size or row limit, a file without all the required columns, or one with no data rows is
+refused (HTTP 400) with the reason, and **nothing from it is imported**.
+
+**Then every row stands on its own.** Valid rows are imported; a row with a problem is skipped and
+the other rows are not affected. Completely empty rows are ignored. The result shows how many rows
+the file had, how many were imported and how many were skipped, and for every skipped row its row
+number as the spreadsheet shows it, the column, the value that was given and the reason, for example:
+
+| Row | Column | Value | Problem |
+| --- | --- | --- | --- |
+| 3 | `course_code` | | course_code is required |
+| 5 | `parent_contact` | 123 | Phone number must have exactly 10 digits (found 3) |
+| 6 | `batch_name` | Lab Group | This batch belongs to a different course (PHY101), not CS101 |
+| 8 | `student_id` | stu-001 | Duplicate of row 2 in this file |
+| 9 | `student_id` | STU-014 | Already exists: this ID belongs to a student |
+
+A row is counted as imported only once the database has saved it, and the rows of one file are
+saved together at the end: if the import fails part-way, none of them is left behind.
+
+**Download skipped rows (CSV)** gives the skipped rows with their original values, their row numbers
+and their problems. Correct them in that file and upload it again as it is: its `row` and `problem`
+columns are not read. Uploading a file twice is harmless; the second time every row is reported as
+already existing.
+
+**What is saved.** An imported course or batch gets the status **Pending**, whatever a `status`
+column in the file says, so that it can be reviewed; the Courses and Batches pages show the badge
+and, once a list holds more than one status, a filter for it. Editing the record and choosing
+Active clears it. An imported student, staff member or member is **Active**, with face enrollment
+not started, exactly like one added through the form.
+
+### Contact numbers
+
+The same rule is applied by the forms, by the API and by uploads. A number is stored as exactly
+**10 digits**.
+
+| Written as | Result |
+| --- | --- |
+| `9876543210` | stored as `9876543210` |
+| `98765 43210`, `98765-43210`, `987-654-3210` | stored as `9876543210` |
+| `+91 98765 43210`, `+919876543210`, `+91-98765-43210` | stored as `9876543210` |
+| `123`, `987654321`, `98765432101` | refused: not 10 digits |
+| `919876543210`, `09876543210` | refused: 12 and 11 digits. Write the country code as `+91` |
+| `+1 98765 43210`, `+ 91 98765 43210`, `91+9876543210` | refused: only `+91`, written at the start, is a country code |
+| `98765abc10`, `(98765) 43210`, `98765.43210` | refused: letters and other symbols are not removed |
+
+A number is never shortened, padded or stripped of characters to make it fit. The Students, Staff
+and Members forms and all three people uploads require a contact number. The API itself still
+accepts a person with no number at all, as it always did; what it refuses is a number that is wrong.
+
+### The upload API
+
+| Request | Purpose |
+| --- | --- |
+| `POST /courses/upload` | Import courses |
+| `POST /batches/upload` | Import batches |
+| `POST /users/upload?person_type=student` (or `admin` for staff, or `member`) | Import people |
+| `GET /courses/upload/template`, `GET /batches/upload/template`, `GET /users/upload/template?person_type=...` | The template; add `format=csv` for a header-only CSV |
+
+The file goes in a multipart form field named `file`:
+
+```powershell
+curl.exe -F "file=@students.xlsx" "http://localhost:8000/users/upload?person_type=student"
+```
+
+The answer has `total_rows`, `imported`, `skipped`, `errors` (one entry per problem: `row`,
+`column`, `value`, `message`), `skipped_rows` (the skipped rows as they were given), `columns` and
+`ignored_columns`. Like the rest of the API these addresses have no authentication.
+
 ## How recognition works
 
 1. YOLOv8 finds every face in the frame; faces under 50 px, or too dark, bright or blurred, are not matched.
@@ -352,6 +474,19 @@ has, keep the full enrollment available and compare: enroll some students each w
   and a unique index on attendance records) and changes no existing row. If the index cannot be created
   because duplicate records already exist, it says so at startup and leaves the records alone.
   `backend/migrations/004_capture_meta_and_unique_attendance.sql` is the same change as SQL for PostgreSQL.
+- Bulk upload, the contact-number rule and the editing fixes add no table and no column, and change
+  no existing row. Numbers saved before the rule existed stay as they are until someone edits them.
+- Bulk upload needs one more Python package, `openpyxl`, to read and write `.xlsx` files (and the
+  tests need `httpx2`). Both are in `backend/requirements.txt`. In an installation made before
+  they were added, install them once:
+
+  ```powershell
+  cd backend
+  .venv\Scripts\python -m pip install -r requirements.txt
+  ```
+
+  Until then the backend still starts and everything else works; an `.xlsx` upload or template is
+  answered with a message saying what is missing, and `.csv` files are accepted as usual.
 
 ## Tests
 
@@ -364,3 +499,20 @@ The tests replace the camera and the models with known faces, so they prove the 
 (who is marked, who is not, that faces do not affect each other, that records are never doubled).
 They do not measure how well real people are told apart; the two scripts above and the camera
 checklist are for that.
+
+Bulk upload, the contact-number rule and the editing of courses, batches and people are tested
+through the real routes, each test on its own empty in-memory SQLite database: files are uploaded
+as a browser uploads them, and what was saved is read back from the database. They have not been
+run against PostgreSQL.
+
+```powershell
+cd frontend
+npm test
+```
+
+This runs the frontend's rules with Node's own test runner (nothing extra to install): the
+contact-number check, what the Courses and Batches forms do when a record is opened, changed,
+cancelled and saved, and what the upload dialog makes of the backend's answer. Two lists are shared
+with the backend's tests so that the two sides cannot drift apart: `backend/tests/data/phone_cases.json`
+(numbers and what must become of them) and `backend/tests/data/import_columns.json` (the column names).
+The screens themselves are not covered by automated tests.

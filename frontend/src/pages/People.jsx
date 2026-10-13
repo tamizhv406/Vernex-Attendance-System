@@ -1,9 +1,11 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { Plus, UserPlus, Users, X } from "lucide-react";
+import { Plus, Upload, UserPlus, Users, X } from "lucide-react";
 import { createPerson, deletePerson } from "../lib/api";
-import { faceEnrolled, onlyNumbers, statusOptions, toPersonPayload } from "../lib/format";
+import { faceEnrolled, statusOptions, toPersonPayload } from "../lib/format";
+import { checkPhone } from "../lib/phone";
 import { PERSON_CONFIG } from "../routes";
 import { Button, Card, ConfirmDialog, DataTable, EmptyState, FormInput, FormSelect, FormTextarea, Identity, Notice, Page, RowActions, SearchInput, Segmented, StatusBadge } from "../ui";
+import { UploadDialog } from "../upload";
 
 // Only what the list shows is searched. Notes and internal ids are left out of the match.
 function matches(person, query) {
@@ -16,7 +18,10 @@ export default function PeoplePage({ page, data }) {
   const isStudent = config.apiType === "student";
   const blank = { person_code: "", full_name: "", guardian_name: "", phone: "", email: "", course_id: "", batch_id: "", level_class: "", joining_date: "", status: "active", face_enrollment_status: "not_started", notes: "" };
   const [form, setForm] = useState(blank);
+  // What is wrong with a field, shown under it: { person_code, phone }.
+  const [errors, setErrors] = useState({});
   const [adding, setAdding] = useState(false);
+  const [uploadOpen, setUploadOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [courseFilter, setCourseFilter] = useState("");
   const [faceFilter, setFaceFilter] = useState("all");
@@ -35,7 +40,16 @@ export default function PeoplePage({ page, data }) {
     if (form.batch_id && !availableBatches.some(batch => Number(batch.id) === Number(form.batch_id))) setForm(current => ({ ...current, batch_id: "" }));
   }, [form.batch_id, availableBatches]);
   // Moving between Students, Staff and Members starts each list clean.
-  useEffect(() => { setForm(blank); setAdding(false); setQuery(""); setCourseFilter(""); setFaceFilter("all"); setMessage(""); }, [page]);
+  useEffect(() => { setForm(blank); setErrors({}); setAdding(false); setUploadOpen(false); setQuery(""); setCourseFilter(""); setFaceFilter("all"); setMessage(""); }, [page]);
+  const closeForm = () => { setAdding(false); setForm(blank); setErrors({}); };
+  // Typing in a field takes back what was said about it; the number is judged again on leaving the field.
+  const setField = (field, value) => { setForm(current => ({ ...current, [field]: value })); setErrors(({ [field]: _fixed, ...rest }) => rest); };
+  const phoneLabel = isStudent ? "Parent contact" : "Contact number";
+  const checkPhoneField = () => {
+    const checked = checkPhone(form.phone);
+    setErrors(({ phone: _old, ...rest }) => (checked.error ? { ...rest, phone: checked.error } : rest));
+    return checked;
+  };
   const save = async event => {
     event.preventDefault();
     if (saving) return;
@@ -43,16 +57,22 @@ export default function PeoplePage({ page, data }) {
       setMessage("Student must select an existing course and batch.");
       return;
     }
+    // The same rules the backend applies. What is sent is the ten digits, however they were typed.
+    const phone = checkPhoneField();
+    if (phone.error) return;
     setSaving(true);
     setMessage("");
     try {
-      await createPerson(toPersonPayload(form, config.apiType));
-      setForm(blank);
-      setAdding(false);
+      await createPerson(toPersonPayload({ ...form, phone: phone.value }, config.apiType));
+      closeForm();
       data.notify(`${config.singular} created.`);
       await data.refresh();
     } catch (err) {
-      setMessage(err.message || `Unable to create ${config.singular.toLowerCase()}.`);
+      // A refusal about one field is said under that field; anything else at the top of the page.
+      const aboutPhone = err.status === 400 && String(err.message).startsWith(`${phoneLabel}: `);
+      if (err.status === 409) setErrors(current => ({ ...current, person_code: `This ${config.singular.toLowerCase()} ID is already in use. Every student, staff member and member needs a different ID.` }));
+      else if (aboutPhone) setErrors(current => ({ ...current, phone: err.message.slice(phoneLabel.length + 2) }));
+      else setMessage(err.message || `Unable to create ${config.singular.toLowerCase()}.`);
     } finally {
       setSaving(false);
     }
@@ -71,14 +91,17 @@ export default function PeoplePage({ page, data }) {
     }
   };
   const filtered = Boolean(query || courseFilter || faceFilter !== "all");
-  return <Page title={config.title} subtitle={isStudent ? "Students are assigned to an existing course and batch." : `${config.title} can be assigned to a course and batch.`} actions={<Button variant={adding ? "outline" : "primary"} icon={adding ? X : UserPlus} onClick={() => setAdding(current => !current)} aria-expanded={adding}>{adding ? "Close form" : `Add ${config.singular.toLowerCase()}`}</Button>}>
+  return <Page title={config.title} subtitle={isStudent ? "Students are assigned to an existing course and batch." : `${config.title} can be assigned to a course and batch.`} actions={<>
+    <Button variant="outline" icon={Upload} onClick={() => setUploadOpen(true)}>Upload</Button>
+    <Button variant={adding ? "outline" : "primary"} icon={adding ? X : UserPlus} onClick={() => setAdding(current => !current)} aria-expanded={adding}>{adding ? "Close form" : `Add ${config.singular.toLowerCase()}`}</Button>
+  </>}>
     {message && <Notice tone="danger" onClose={() => setMessage("")}>{message}</Notice>}
     {adding && <Card title={`New ${config.singular.toLowerCase()}`} subtitle="Fields marked * are required." className="animate-fade-up">
       <form className="grid gap-4 md:grid-cols-2 xl:grid-cols-3" onSubmit={save}>
-        <FormInput label={`${config.singular} ID`} value={form.person_code} onChange={e => setForm({ ...form, person_code: e.target.value })} required autoFocus />
-        <FormInput label="Full name" value={form.full_name} onChange={e => setForm({ ...form, full_name: e.target.value })} required />
+        <FormInput label={`${config.singular} ID`} value={form.person_code} onChange={e => setField("person_code", e.target.value)} error={errors.person_code} maxLength={80} required autoFocus />
+        <FormInput label="Full name" value={form.full_name} onChange={e => setForm({ ...form, full_name: e.target.value })} maxLength={160} required />
         {isStudent && <FormInput label="Parent name" value={form.guardian_name} onChange={e => setForm({ ...form, guardian_name: e.target.value })} />}
-        <FormInput label={isStudent ? "Parent contact" : "Contact number"} inputMode="numeric" maxLength={10} hint="Up to 10 digits." value={form.phone} onChange={e => setForm({ ...form, phone: onlyNumbers(e.target.value).slice(0, 10) })} required />
+        <FormInput label={phoneLabel} type="tel" inputMode="tel" autoComplete="off" maxLength={20} hint="10 digits. Spaces, hyphens and +91 in front are accepted." value={form.phone} onChange={e => setField("phone", e.target.value)} onBlur={() => { if (form.phone.trim()) checkPhoneField(); }} error={errors.phone} required />
         {!isStudent && <FormInput label="Email" type="email" value={form.email} onChange={e => setForm({ ...form, email: e.target.value })} />}
         <FormSelect label="Course" value={form.course_id} onChange={e => setForm({ ...form, course_id: e.target.value, batch_id: "" })} options={data.courses.map(course => ({ value: course.id, label: course.course_name }))} empty="Create a course first" required={isStudent} />
         <FormSelect label="Batch" value={form.batch_id} onChange={e => setForm({ ...form, batch_id: e.target.value })} options={availableBatches.map(batch => ({ value: batch.id, label: batch.batch_name }))} empty={form.course_id ? "Create a batch under this course" : "Select course first"} required={isStudent} />
@@ -88,7 +111,7 @@ export default function PeoplePage({ page, data }) {
         <FormSelect label="Face enrollment status" value={form.face_enrollment_status} onChange={e => setForm({ ...form, face_enrollment_status: e.target.value })} options={[{ value: "not_started", label: "Pending" }, { value: "completed", label: "Completed" }]} />
         <FormTextarea label="Notes" className="md:col-span-2 xl:col-span-3" value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })} placeholder="Optional notes" />
         <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end md:col-span-2 xl:col-span-3">
-          <Button type="button" variant="outline" onClick={() => { setAdding(false); setForm(blank); }}>Cancel</Button>
+          <Button type="button" variant="outline" onClick={closeForm}>Cancel</Button>
           <Button icon={Plus} loading={saving}>Save {config.singular.toLowerCase()}</Button>
         </div>
       </form>
@@ -114,5 +137,6 @@ export default function PeoplePage({ page, data }) {
       ])} empty={filtered ? <EmptyState icon={Users} title={`No ${config.title.toLowerCase()} match`} message="Try another search or clear the filters." action={<Button variant="outline" size="sm" onClick={() => { setQuery(""); setCourseFilter(""); setFaceFilter("all"); }}>Clear filters</Button>} /> : <EmptyState icon={Users} title={`No ${config.title.toLowerCase()} yet`} message={isStudent && !data.courses.length ? "Create a course and a batch first, then add students." : `Add the first ${config.singular.toLowerCase()} to get started.`} action={<Button size="sm" icon={UserPlus} onClick={() => setAdding(true)}>Add {config.singular.toLowerCase()}</Button>} />} />
     </Card>
     <ConfirmDialog open={Boolean(removing)} busy={deleting} title={`Delete ${removing?.full_name || "this person"}?`} message="This removes the person and their enrolled face data. It cannot be undone." onConfirm={remove} onCancel={() => setRemoving(null)} />
+    <UploadDialog kind={page} open={uploadOpen} onClose={() => setUploadOpen(false)} onImported={data.refresh} notify={data.notify} />
   </Page>;
 }

@@ -13,15 +13,28 @@ async function request(path, options = {}) {
 
   const payload = await response.json().catch(() => ({}));
 
-  if (!response.ok || payload.success === false) {
-    // Callers can tell a refused request (payload) from a broken one (status) instead of guessing from the text.
-    const error = new Error(payload.message || (typeof payload.detail === "string" ? payload.detail : "") || `Request failed with status ${response.status}`);
-    error.status = response.status;
-    error.payload = payload;
-    throw error;
-  }
+  if (!response.ok || payload.success === false) throw apiError(payload, response.status);
 
   return payload.data ?? payload;
+}
+
+// Callers can tell a refused request (payload) from a broken one (status) instead of guessing from the text.
+function apiError(payload, status) {
+  const error = new Error(payload.message || detailText(payload.detail) || `Request failed with status ${status}`);
+  error.status = status;
+  error.payload = payload;
+  return error;
+}
+
+// The backend explains a refusal in "detail": one sentence from a route, or a list from FastAPI's
+// own checking of the request ([{ loc: ["body", "course_id"], msg: "Input should be..." }]).
+function detailText(detail) {
+  if (typeof detail === "string") return detail;
+  if (!Array.isArray(detail)) return "";
+  return detail.map(item => {
+    const field = (Array.isArray(item?.loc) ? item.loc : []).filter(part => !["body", "query", "path"].includes(part)).join(".");
+    return [field, item?.msg].filter(Boolean).join(": ");
+  }).filter(Boolean).join("; ");
 }
 
 function queryString(filters = {}) {
@@ -79,6 +92,20 @@ export function updateBatch(id, data) {
 
 export function deleteBatch(id) {
   return request(`/batches/${id}`, { method: "DELETE" });
+}
+
+// Bulk upload. The file goes in a form, so no JSON content type is set for it (see request).
+export function uploadImport(path, file) {
+  const form = new FormData();
+  form.append("file", file, file.name);
+  return request(path, { method: "POST", body: form });
+}
+
+// A file from the backend (an import template) as a Blob. A refusal arrives as JSON and is thrown like any other.
+export async function downloadFile(path) {
+  const response = await fetch(`${API_BASE_URL}${path}`);
+  if (!response.ok) throw apiError(await response.json().catch(() => ({})), response.status);
+  return response.blob();
 }
 
 export function getTimings() {

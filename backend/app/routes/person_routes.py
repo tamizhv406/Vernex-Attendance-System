@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -7,6 +8,8 @@ from app.models.face_embedding import FaceEnrollment
 from app.models.person import Person
 from app.schemas.person_schema import PersonCreate, PersonUpdate
 from app.serializers import person_data
+from app.services.person_service import DUPLICATE_ID, build_person, clean_person_fields, ensure_course_batch, person_with_code
+from app.utils.validation import FieldError
 
 router = APIRouter(prefix="/users", tags=["User Management"])
 legacy_router = APIRouter(prefix="/people", tags=["Legacy People"])
@@ -20,38 +23,29 @@ def serialize_people(rows):
     return [person_data(person, course, batch) for person, course, batch in rows]
 
 
-def ensure_course_batch(db: Session, payload, existing: Person | None = None):
-    data = payload.model_dump(exclude_unset=True)
-    person_type = data["person_type"] if "person_type" in data else (existing.person_type if existing else None)
-    course_id = data["course_id"] if "course_id" in data else (existing.course_id if existing else None)
-    batch_id = data["batch_id"] if "batch_id" in data else (existing.batch_id if existing else None)
-    if person_type == "student" and (not course_id or not batch_id):
-        raise HTTPException(400, "Student must be assigned to a course and batch")
-    if batch_id and not course_id:
-        raise HTTPException(400, "Select a course before selecting a batch")
-    course = db.get(Course, course_id) if course_id else None
-    batch = db.get(CourseBatch, batch_id) if batch_id else None
-    if course_id and not course:
-        raise HTTPException(404, "Course not found")
-    if batch_id and not batch:
-        raise HTTPException(404, "Batch not found")
-    if course and batch and batch.course_id != course.id:
-        raise HTTPException(400, "Selected batch does not belong to selected course")
-    return course, batch
+def commit_or_duplicate(db: Session, code: str, exclude_id: int | None = None):
+    # Two requests with the same new ID can both pass the check before them. The database's unique
+    # index refuses the second one here, and that is answered as the conflict it is.
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        if person_with_code(db, code, exclude_id):
+            raise HTTPException(409, DUPLICATE_ID)
+        raise
 
 
 @router.post("/create")
 @legacy_router.post("/create")
 def create_person(payload: PersonCreate, db: Session = Depends(get_db)):
-    course, batch = ensure_course_batch(db, payload)
-    data = payload.model_dump()
-    if course:
-        data["category_program"] = course.course_name
-    if batch:
-        data["batch_name"] = batch.batch_name
-    person = Person(**data)
+    try:
+        person, course, batch = build_person(db, payload)
+    except FieldError as error:
+        raise HTTPException(error.status, error.message)
+    if person_with_code(db, person.person_code):
+        raise HTTPException(409, DUPLICATE_ID)
     db.add(person)
-    db.commit()
+    commit_or_duplicate(db, person.person_code)
     db.refresh(person)
     return ok("Created successfully", person_data(person, course, batch))
 
@@ -98,13 +92,21 @@ def update_person(person_id: int, payload: PersonUpdate, db: Session = Depends(g
     if not person:
         raise HTTPException(404, "User not found")
     course, batch = ensure_course_batch(db, payload, existing=person)
-    for key, value in payload.model_dump(exclude_unset=True).items():
+    try:
+        changes = clean_person_fields(payload.model_dump(exclude_unset=True))
+    except FieldError as error:
+        raise HTTPException(error.status, error.message)
+    code = changes.get("person_code", person.person_code)
+    # The person's own row is left out, so saving someone with the ID they already have never conflicts.
+    if "person_code" in changes and person_with_code(db, code, exclude_id=person_id):
+        raise HTTPException(409, DUPLICATE_ID)
+    for key, value in changes.items():
         setattr(person, key, value)
     if course:
         person.category_program = course.course_name
     if batch:
         person.batch_name = batch.batch_name
-    db.commit()
+    commit_or_duplicate(db, code, exclude_id=person_id)
     db.refresh(person)
     return ok("Updated successfully", person_data(person, course, batch))
 

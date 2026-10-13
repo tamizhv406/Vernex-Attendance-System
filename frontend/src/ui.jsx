@@ -1,5 +1,6 @@
 // Shared building blocks. Every screen is made from these, so spacing, radii, colours and states stay the same everywhere.
 import React, { useEffect, useId, useRef } from "react";
+import { createPortal } from "react-dom";
 import { AlertTriangle, Check, CheckCircle2, Clock3, Edit3 as EditIcon, Inbox, Info as InfoIcon, Loader2, Minus, RefreshCw, Search, Trash2 as TrashIcon, X, XCircle } from "lucide-react";
 import { initials, titleCase } from "./lib/format";
 
@@ -101,11 +102,11 @@ export function FormTextarea({ label, hint, className = "", ...props }) {
   </FieldShell>;
 }
 
-export function FormSelect({ label, options = [], empty = "No options", hint, className = "", ...props }) {
+export function FormSelect({ label, options = [], empty = "No options", hint, error, className = "", ...props }) {
   const hasEmptyValueOption = options.some(option => (typeof option === "string" ? option : option.value) === "");
   const needsPlaceholder = options.length > 0 && !hasEmptyValueOption && (props.value ?? "") === "";
-  return <FieldShell label={props.required ? `${label} *` : label} hint={hint} className={className}>
-    <select className="field field-select" {...props}>
+  return <FieldShell label={props.required ? `${label} *` : label} hint={hint} error={error} className={className}>
+    <select className={`field field-select ${error ? "border-red-400" : ""}`} aria-invalid={Boolean(error) || undefined} {...props}>
       {!options.length && <option value="">{empty}</option>}
       {needsPlaceholder && <option value="" disabled hidden>{`Select ${label.toLowerCase()}`}</option>}
       {options.map(option => typeof option === "string" ? <option key={option} value={option}>{option}</option> : <option key={`${option.value}-${option.label}`} value={option.value}>{option.label}</option>)}
@@ -261,6 +262,14 @@ export function DataTable({ columns, rows, empty, emptyIcon, loading, caption })
   </div>;
 }
 
+// Draws a dialog straight under <body>, over the whole screen. Every page fades in with a transform
+// and keeps it afterwards, and inside a transformed element "position: fixed" is fixed to that
+// element: a dialog left in the page is laid out over the full length of the list (and under the
+// top bar) instead of over the screen.
+export function overScreen(dialog) {
+  return createPortal(dialog, document.body);
+}
+
 // Asks before anything that cannot be undone. Escape and the backdrop cancel; focus starts on Cancel.
 export function ConfirmDialog({ open, title, message, confirmLabel = "Delete", busy, onConfirm, onCancel }) {
   const cancelRef = useRef(null);
@@ -275,7 +284,7 @@ export function ConfirmDialog({ open, title, message, confirmLabel = "Delete", b
     return () => { removeEventListener("keydown", onKey); previous?.focus?.(); };
   }, [open, busy]);
   if (!open) return null;
-  return <div className="fixed inset-0 z-50 grid place-items-end p-3 sm:place-items-center">
+  return overScreen(<div className="fixed inset-0 z-50 grid place-items-end p-3 sm:place-items-center">
     <button type="button" className="absolute inset-0 cursor-default bg-ink/40 backdrop-blur-sm" onClick={() => !busy && onCancel()} aria-label="Cancel" tabIndex={-1} />
     <div role="alertdialog" aria-modal="true" aria-labelledby={titleId} aria-describedby={textId} className="relative w-full max-w-md animate-sheet-up rounded-4xl bg-white p-6 shadow-float">
       <div className="grid h-11 w-11 place-items-center rounded-2xl bg-red-50 text-red-600"><AlertTriangle size={20} aria-hidden="true" /></div>
@@ -286,7 +295,7 @@ export function ConfirmDialog({ open, title, message, confirmLabel = "Delete", b
         <Button variant="danger" loading={busy} onClick={onConfirm}>{confirmLabel}</Button>
       </div>
     </div>
-  </div>;
+  </div>);
 }
 
 export function RowActions({ onEdit, onDelete, name }) {
