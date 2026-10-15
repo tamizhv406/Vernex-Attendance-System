@@ -126,7 +126,7 @@ export function SearchInput({ value, onChange, placeholder = "Search", className
 export function Segmented({ label, value, onChange, options }) {
   return <div role="group" aria-label={label} className="inline-flex max-w-full gap-1 overflow-x-auto rounded-full border border-line bg-canvas p-1">
     {options.map(option => <button key={option.value} type="button" aria-pressed={value === option.value} onClick={() => onChange(option.value)} className={`h-9 whitespace-nowrap rounded-full px-3.5 text-[13px] font-semibold transition duration-150 ${value === option.value ? "bg-ink text-white shadow-sm" : "text-ink-muted hover:bg-white hover:text-ink"}`}>
-      {option.label}{option.count !== undefined && <span className={`ml-1.5 tabular-nums ${value === option.value ? "text-white/70" : "text-slate-400"}`}>{option.count}</span>}
+      {option.label}{option.count !== undefined && <span className={`ml-1.5 tabular-nums ${value === option.value ? "text-white/70" : "text-ink-muted"}`}>{option.count}</span>}
     </button>)}
   </div>;
 }
@@ -237,7 +237,9 @@ export function ProgressRing({ value, total, size = 132, label }) {
 }
 
 // Desktop: a table. Phones: one card per row, with the first column as the card's heading.
-export function DataTable({ columns, rows, empty, emptyIcon, loading, caption }) {
+// rowKeys: an id per row (the record's own id). Without them rows are told apart by position, and a
+// list that is sorted or refreshed under the pointer can turn a click on one row into a click on another.
+export function DataTable({ columns, rows, rowKeys, empty, emptyIcon, loading, caption }) {
   if (loading) return <div className="grid gap-2" aria-busy="true">{[0, 1, 2, 3].map(index => <Skeleton key={index} className="h-12 w-full" />)}</div>;
   if (!rows.length) return typeof empty === "string" ? <EmptyState icon={emptyIcon} title={empty} /> : empty;
   return <div className="overflow-hidden rounded-2xl border border-line">
@@ -245,11 +247,11 @@ export function DataTable({ columns, rows, empty, emptyIcon, loading, caption })
       <table className="min-w-full text-sm">
         {caption && <caption className="sr-only">{caption}</caption>}
         <thead><tr className="bg-canvas/70">{columns.map(column => <th key={column} scope="col" className="whitespace-nowrap px-4 py-3 text-left text-[11px] font-semibold uppercase tracking-wider text-ink-muted">{column}</th>)}</tr></thead>
-        <tbody className="divide-y divide-line bg-white">{rows.map((row, index) => <tr key={index} className="transition-colors duration-150 hover:bg-canvas/50">{row.map((cell, cellIndex) => <td key={cellIndex} className="px-4 py-3 align-middle text-ink-soft">{cell}</td>)}</tr>)}</tbody>
+        <tbody className="divide-y divide-line bg-white">{rows.map((row, index) => <tr key={rowKeys?.[index] ?? index} className="transition-colors duration-150 hover:bg-canvas/50">{row.map((cell, cellIndex) => <td key={cellIndex} className="px-4 py-3 align-middle text-ink-soft">{cell}</td>)}</tr>)}</tbody>
       </table>
     </div>
     <ul className="divide-y divide-line bg-white md:hidden">
-      {rows.map((row, index) => <li key={index} className="p-4">
+      {rows.map((row, index) => <li key={rowKeys?.[index] ?? index} className="p-4">
         <div className="font-semibold text-ink">{row[0]}</div>
         <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-3">
           {row.slice(1).map((cell, cellIndex) => <div key={cellIndex} className="min-w-0">

@@ -126,7 +126,7 @@ export default function PeoplePage({ page, data }) {
           { value: "pending", label: "Pending", count: inCourse.filter(person => !faceEnrolled(person)).length }
         ]} />
       </div>
-      <DataTable loading={data.loading} caption={config.title} columns={[config.singular, "Contact", "Course", "Batch", "Status", "Face", "Actions"]} rows={rows.map(person => [
+      <DataTable loading={data.loading} caption={config.title} columns={[config.singular, "Contact", "Course", "Batch", "Status", "Face", "Actions"]} rowKeys={rows.map(person => person.id)} rows={rows.map(person => [
         <Identity name={person.full_name} detail={person.person_code} />,
         person.guardian_phone || person.phone || "-",
         person.course_name || "-",

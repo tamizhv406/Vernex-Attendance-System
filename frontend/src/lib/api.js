@@ -156,13 +156,25 @@ export function getAttendanceByDate(attendanceDate, filters = {}) {
   return request(`/attendance/by-date${queryString({ attendance_date: attendanceDate, ...filters })}`);
 }
 
+// Marked or corrected by hand: { session_id, person_id, status, notes }. The backend stores it as a hand
+// mark in that session, on that session's date, and writes it to the audit log.
 export function markAttendance(data) {
   return request("/attendance/mark", { method: "POST", body: JSON.stringify(data) });
 }
 
+export function getAttendanceSessions(filters = {}) {
+  return request(`/attendance/sessions${queryString(filters)}`);
+}
+
+export function getSessionRecords(sessionId) {
+  return request(`/attendance/session/${sessionId}/records`);
+}
+
 // mode: "quick" or "guided" (five poses). Left out, the backend's FACE_ENROLL_MODE decides.
-export function startFaceEnrollment(personId, mode) {
-  return request(`/face/enrollment/start/${personId}${queryString({ mode })}`, { method: "POST" });
+// consent: the person enrolling confirmed that the student (or a parent or guardian) agreed; the
+// backend starts nothing without it and writes it into the audit log.
+export function startFaceEnrollment(personId, mode, consent) {
+  return request(`/face/enrollment/start/${personId}${queryString({ mode, consent: consent ? "true" : undefined })}`, { method: "POST" });
 }
 
 export function cancelFaceEnrollment(personId) {

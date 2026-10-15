@@ -2,6 +2,7 @@
 // one issue's page, where a super admin answers it, changes its status and assigns it. The backend
 // refuses all of this to an admin; the list asks again every 45 seconds while it can be seen.
 import React, { useEffect, useId, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import { ArrowLeft, Inbox, RefreshCw, Save, X } from "lucide-react";
 import { commentOnIssue, getAdmins, getInboxIssue, getInboxIssues, updateIssue } from "../../lib/api";
 import {
@@ -71,7 +72,7 @@ function InboxList({ filters, setFilters, page, setListPage, setPage }) {
       {state === "error"
         ? <ErrorState title="Could not load the issues" message={issues.error.message} onRetry={issues.reload} />
         : <DataTable loading={state === "loading"} caption="Reported issues" columns={["Issue", "Status", "Severity", "Category", "Reported by", "Assigned to", "Reported"]}
-          rows={items.map(issue => [
+          rowKeys={items.map(issue => issue.id)} rows={items.map(issue => [
             <IssueLink issue={issue} href={pathFor("portalIssues", issue.id)} onOpen={open} />,
             <IssueStatus status={issue.status} />,
             <IssueSeverity severity={issue.severity} />,
@@ -121,18 +122,22 @@ function InboxIssue({ issueId, setPage, onChanged, notify }) {
     setFailure("");
     if (found.note) { document.getElementById(noteId)?.focus(); return; }
     if (!Object.keys(body).length) { notify("Nothing to save: nothing was changed.", "info"); return; }
+    // The fields stay locked until the saved issue has been read back: a change made meanwhile would
+    // be overwritten by the reload without a word.
     setSaving(true);
+    let focusNote = false;
     try {
       await updateIssue(issueId, body);
-      notify("Issue saved. The reporter sees the change in My reports.");
       onChanged?.();
       await issue.reload();
+      notify("Issue saved. The reporter sees the change in My reports.");
     } catch (error) {
       const named = fieldErrors(error, ["status", "resolution_note", "assigned_to"]);
-      if (named.resolution_note) { setErrors({ note: named.resolution_note }); document.getElementById(noteId)?.focus(); }
+      if (named.resolution_note) { setErrors({ note: named.resolution_note }); focusNote = true; }
       else setFailure(named.assigned_to || named.status || error.message);
     } finally {
-      setSaving(false);
+      flushSync(() => setSaving(false));
+      if (focusNote) document.getElementById(noteId)?.focus();
     }
   };
 
@@ -154,10 +159,10 @@ function InboxIssue({ issueId, setPage, onChanged, notify }) {
       <div className="grid grid-cols-1 gap-5 xl:grid-cols-[1fr_360px]">
         <Card title="Status and assignment" subtitle="The reporter sees the status, and the resolution note once it is resolved." className="xl:order-2 xl:self-start">
           <form onSubmit={save} noValidate className="grid gap-4">
-            <FormSelect label="Status" value={form.status} onChange={set("status")} options={STATUS_OPTIONS} />
-            {form.status === "resolved" && <FormTextarea id={noteId} required label="Resolution note" rows={4} value={form.note} onChange={set("note")} error={errors.note}
+            <FormSelect label="Status" value={form.status} onChange={set("status")} options={STATUS_OPTIONS} disabled={saving} />
+            {form.status === "resolved" && <FormTextarea id={noteId} required label="Resolution note" rows={4} value={form.note} onChange={set("note")} error={errors.note} disabled={saving}
               hint={`${noteCount}/${LIMITS.note[1]} characters. What was done, or why nothing needs to be.`} />}
-            <FormSelect label="Assigned to" value={form.assignee} onChange={set("assignee")} options={assignees} hint="Active super admins only." />
+            <FormSelect label="Assigned to" value={form.assignee} onChange={set("assignee")} options={assignees} hint="Active super admins only." disabled={saving} />
             {failure && <Notice tone="danger">{failure}</Notice>}
             <div className="flex justify-end"><Button icon={Save} loading={saving}>Save</Button></div>
           </form>

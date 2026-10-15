@@ -34,13 +34,18 @@ export default function Dashboard({ data, setPage }) {
       <Card title="Today's attendance" subtitle="Students marked present or late today." className="xl:col-span-1">
         {loading ? <div className="grid place-items-center py-4"><Skeleton className="h-32 w-32 rounded-full" /></div> : !students.length ? <EmptyState icon={GraduationCap} title="No students yet" message="Add students to see how many attend each day." action={<Button size="sm" icon={UserPlus} onClick={() => setPage("students")}>Add a student</Button>} /> : <div className="flex flex-col items-center gap-6 sm:flex-row xl:flex-col">
           <ProgressRing value={attended} total={students.length} label={`${attended} of ${students.length} students attended today`} />
-          <dl className="grid w-full flex-1 gap-3">
-            {breakdown.map(item => <div key={item.label}>
-              <div className="flex items-center justify-between text-sm"><dt className="font-medium text-ink-soft">{item.label}</dt><dd className="font-bold tabular-nums text-ink">{item.value}</dd></div>
-              <div className="mt-1.5 h-2 overflow-hidden rounded-full bg-canvas" aria-hidden="true"><div className={`h-full rounded-full transition-[width] duration-700 ease-out ${item.bar}`} style={{ width: today.length ? `${(item.value / today.length) * 100}%` : "0%" }} /></div>
-            </div>)}
+          <div className="grid w-full flex-1 gap-3">
+            {/* Each group is one <div> holding its <dt> and <dd>s directly, so a screen reader pairs
+                every label with its number (the bar is decoration). */}
+            <dl className="grid gap-3">
+              {breakdown.map(item => <div key={item.label} className="grid grid-cols-[1fr_auto] items-center gap-x-2 gap-y-1.5 text-sm">
+                <dt className="font-medium text-ink-soft">{item.label}</dt>
+                <dd className="font-bold tabular-nums text-ink">{item.value}</dd>
+                <dd className="col-span-2 h-2 overflow-hidden rounded-full bg-canvas" aria-hidden="true"><div className={`h-full rounded-full transition-[width] duration-700 ease-out ${item.bar}`} style={{ width: today.length ? `${(item.value / today.length) * 100}%` : "0%" }} /></dd>
+              </div>)}
+            </dl>
             {!today.length && <p className="text-sm text-ink-muted">No attendance has been recorded today.</p>}
-          </dl>
+          </div>
         </div>}
       </Card>
 

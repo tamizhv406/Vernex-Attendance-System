@@ -85,19 +85,36 @@ WHERE s.batch_id IS NULL
 ALTER TABLE attendance_records ADD COLUMN IF NOT EXISTS course_id INTEGER REFERENCES courses(id) ON DELETE SET NULL;
 ALTER TABLE attendance_records ADD COLUMN IF NOT EXISTS batch_id INTEGER REFERENCES batches(id) ON DELETE SET NULL;
 
+-- From the record's session first, then from the person. (One UPDATE ... FROM attendance_sessions s
+-- LEFT JOIN user_management p ON p.id = r.person_id is refused by PostgreSQL: the table being
+-- updated cannot be named inside the FROM clause's join. These are the statements app/schema.py runs.)
 UPDATE attendance_records r
-SET course_id = COALESCE(s.course_id, p.course_id)
+SET course_id = s.course_id
 FROM attendance_sessions s
-LEFT JOIN user_management p ON p.id = r.person_id
 WHERE r.course_id IS NULL
-  AND r.session_id = s.id;
+  AND r.session_id = s.id
+  AND s.course_id IS NOT NULL;
 
 UPDATE attendance_records r
-SET batch_id = COALESCE(s.batch_id, p.batch_id)
+SET course_id = p.course_id
+FROM user_management p
+WHERE r.course_id IS NULL
+  AND r.person_id = p.id
+  AND p.course_id IS NOT NULL;
+
+UPDATE attendance_records r
+SET batch_id = s.batch_id
 FROM attendance_sessions s
-LEFT JOIN user_management p ON p.id = r.person_id
 WHERE r.batch_id IS NULL
-  AND r.session_id = s.id;
+  AND r.session_id = s.id
+  AND s.batch_id IS NOT NULL;
+
+UPDATE attendance_records r
+SET batch_id = p.batch_id
+FROM user_management p
+WHERE r.batch_id IS NULL
+  AND r.person_id = p.id
+  AND p.batch_id IS NOT NULL;
 
 CREATE INDEX IF NOT EXISTS idx_batches_course_id ON batches(course_id);
 CREATE INDEX IF NOT EXISTS idx_user_management_course_id ON user_management(course_id);

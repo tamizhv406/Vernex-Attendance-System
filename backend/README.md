@@ -69,20 +69,34 @@ Option 1: Run SQL in Supabase SQL Editor:
 migrations/001_initial_schema.sql
 ```
 
-and then the later migrations in order (`002` to `007`; `007_issues.sql` adds the reported issues
-and their comments). For a new, empty database `migrations/full_schema.sql` is all of them in one file.
+and then the later migrations in order (`002` to `009`; `007_issues.sql` adds the reported issues
+and their comments, `008_row_level_security.sql` switches row level security on for every table,
+`009_app_role.sql` creates the least-privilege account `vernex_app` for the backend).
+For a new, empty database `migrations/full_schema.sql` is all of them in one file.
 
-Option 2: Use SQLAlchemy:
+On PostgreSQL the backend itself creates and changes nothing when it starts: it checks the schema
+(tables, columns, the duplicate-attendance index, row level security on every table, and that its own
+account is not shut out by it) and refuses to start, naming what is missing.
+
+Option 2: Use SQLAlchemy (needs an account that owns the tables; also runs the old repair statements):
 
 ```powershell
 python scripts/init_db.py
 ```
 
-## Test Supabase Connection
+`DATABASE_AUTO_UPGRADE=true` in `.env` makes the backend do the same at every start.
+
+## Check the database
 
 ```powershell
-python scripts/test_supabase_connection.py
+python scripts/check_database.py
 ```
+
+Read-only (one `READ ONLY` transaction, rolled back): the kind of database and its version, whether
+the connection works, the start-up check above, and on PostgreSQL the account's rights and whether
+Supabase's `anon`/`authenticated` roles could reach a table without row level security. It never
+prints the address, the user name, the password or any row. Exit code 0 ready, 1 schema not ready,
+2 no connection. (`scripts/test_supabase_connection.py` prints the driver's error, which names the host.)
 
 ## Create the first super admin
 
@@ -110,7 +124,8 @@ Docs (only when `API_DOCS=true` is set in `.env`; off by default):
 http://localhost:8000/docs
 ```
 
-Health (public; answers `ok`, `starting` or `unavailable` and nothing else):
+Health (public; one word each): `/health/live` (the process answers), `/health/ready` (`ok` once the
+database answers and the models are loaded, otherwise 503), and
 
 ```text
 http://localhost:8000/health
@@ -162,6 +177,10 @@ Every route needs a login except `GET /health`, `POST /auth/login`, `POST /auth/
   - `POST /issues/{id}/comments` (`body`, 1 to 4000 characters); `409` on a closed issue
   - No route deletes an issue or changes or deletes a comment. A refused request on `/issues` (like
     `/auth` and `/super-admin`) says what is wrong without repeating what was sent
+- Limits per account: 600 camera frames in any 30 seconds (scanner and enrollment together), 20
+  spreadsheet uploads a minute; past that `429` with `Retry-After`. Every answer carries
+  `X-Content-Type-Options`, `X-Frame-Options`, a `Content-Security-Policy`, `Referrer-Policy` and
+  `Cache-Control: no-store`. A login not renewed for `AUTH_IDLE_MINUTES` (30) cannot be renewed.
 - Paged lists (`/issues`, `/super-admin/issues`, `/super-admin/audit-logs`): `page` is 1 to 10,000 and
   `page_size` 1 to 100 (`app/routes/paging.py`); anything else is refused with `422`
 - `GET /`
@@ -186,9 +205,19 @@ Every route needs a login except `GET /health`, `POST /auth/login`, `POST /auth/
 - `GET /attendance/sessions`
 - `GET /attendance/today`
 - `POST /attendance/mark`, `POST /attendance/mark-absent` (marked by hand; written to the audit log).
-  `recognition_method: "auto_absent"` means absent, in every kind of session; the mark-absent route
-  sets it. Any other method follows the session: `visited` for a member visit, otherwise `present`,
-  or `late`/`absent` by the session's times
+  `session_id` is required (`400` without, `404` for one that does not exist, `400` for a session on
+  a later day). The record belongs to that session and its date, also for an earlier session (a
+  correction). It is stored as `manual` (or `auto_absent` for absent) whatever `recognition_method`
+  says, and without a `confidence_score`. `status` (`present`, `late`, `absent`, `visited`) is the
+  teacher's choice; for a student who is already marked it corrects the one record ("Attendance
+  updated", with the previous status in the audit log). Without `status` the session decides:
+  `visited` for a member visit, otherwise `present`, or `late`/`absent` by the session's times on the
+  session's own day
+- Face frames (`/face/...`): at most `FACE_MAX_UPLOAD_BYTES` (2,000,000) per request, refused with
+  `413` before it is read (`411` for a body of unknown length), and at most `FACE_MAX_IMAGE_PIXELS`
+  (4096 x 4096) once unpacked (`413`). An id that is not a whole number is `400` and names the field;
+  an image that cannot be read is "Invalid image". The scanner writes nothing into a session dated
+  another day ("Start a new session for today").
 - `POST /face/enrollment/start/{person_id}`
 - `POST /face/enrollment/frame`
 - `POST /face/enrollment/complete/{person_id}`

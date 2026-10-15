@@ -98,7 +98,7 @@ export function CoursesPage({ data }) {
     </Card>
     <Card title="All courses" subtitle={rows.length === data.courses.length ? `${data.courses.length} course${data.courses.length === 1 ? "" : "s"}` : `${rows.length} of ${data.courses.length} shown`}>
       <div className="mb-4 empty:hidden"><StatusFilter rows={data.courses} value={statusFilter} onChange={setStatusFilter} /></div>
-      <DataTable loading={data.loading} caption="Courses" columns={["Course", "Code", "Description", "Batches", "Status", "Actions"]} rows={rows.map(course => [
+      <DataTable loading={data.loading} caption="Courses" columns={["Course", "Code", "Description", "Batches", "Status", "Actions"]} rowKeys={rows.map(course => course.id)} rows={rows.map(course => [
         <span className="font-semibold text-ink">{course.course_name}</span>,
         course.course_code,
         course.description || "-",
@@ -216,7 +216,7 @@ export function BatchesPage({ data }) {
         <FormSelect label="Show" value={courseFilter} onChange={e => setCourseFilter(e.target.value)} options={[{ value: "", label: "All courses" }, ...data.courses.map(course => ({ value: course.id, label: course.course_name }))]} />
         <div className="lg:justify-self-end"><StatusFilter rows={inCourse} value={statusFilter} onChange={setStatusFilter} /></div>
       </div>}
-      <DataTable loading={data.loading} caption="Batches" columns={["Batch", "Course", "Level", "Status", "Actions"]} rows={rows.map(batch => [
+      <DataTable loading={data.loading} caption="Batches" columns={["Batch", "Course", "Level", "Status", "Actions"]} rowKeys={rows.map(batch => batch.id)} rows={rows.map(batch => [
         <span className="font-semibold text-ink">{batch.batch_name}</span>,
         courseName(data.courses, batch.course_id),
         batch.batch_level || "-",

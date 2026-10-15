@@ -1,14 +1,18 @@
 from datetime import date, datetime, time
-from pydantic import BaseModel
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict
+
+from app.schemas.timing_schema import text
 
 
 class AttendanceSessionCreate(BaseModel):
-    session_name: str
-    session_type: str
+    session_name: text(140)
+    session_type: text(40)
     course_id: int
     batch_id: int
-    category_program: str | None = None
-    batch_name: str | None = None
+    category_program: text(120) | None = None
+    batch_name: text(120) | None = None
     timing_id: int | None = None
     session_date: date | None = None
     start_time: time | None = None
@@ -19,14 +23,20 @@ class AttendanceSessionCreate(BaseModel):
 class AttendanceMark(BaseModel):
     session_id: int | None = None
     person_id: int | None = None
-    person_code: str | None = None
+    person_code: text(80) | None = None
     course_id: int | None = None
     batch_id: int | None = None
     confidence_score: float | None = None
-    recognition_method: str = "face_ai"
-    device_name: str | None = None
-    marked_by: str | None = None
-    notes: str | None = None
+    # The scanner says "face_ai" itself. The routes for marking by hand store "manual" (or
+    # "auto_absent" for absent) whatever is sent, and never a score sent by the browser.
+    recognition_method: text(40) = "manual"
+    device_name: text(120) | None = None
+    marked_by: text(120) | None = None
+    # A reason for a correction; the column has no limit, a request does.
+    notes: text(1000) | None = None
+    # Marking by hand only: the status the teacher chose. Without it the session decides (see
+    # attendance_service.write_attendance); with it, a record that already exists is corrected.
+    status: Literal["present", "late", "absent", "visited"] | None = None
 
 
 class AttendanceOut(BaseModel):
@@ -43,5 +53,4 @@ class AttendanceOut(BaseModel):
     status: str
     sync_status: str
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)

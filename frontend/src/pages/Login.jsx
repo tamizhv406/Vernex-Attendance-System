@@ -51,7 +51,7 @@ export default function Login({ notice }) {
           <Feature icon={ScanFace} title="Guided face enrollment">A few poses, checked for light and sharpness as they are taken.</Feature>
           <Feature icon={ShieldCheck} title="Verified before it is marked">Attendance is written by the backend, one record per person and session.</Feature>
         </ul>
-        <p className="text-xs text-white/40">Runs on your own network.</p>
+        <p className="text-xs text-white/60">Runs on your own network.</p>
       </aside>
     </div>
   </main>;

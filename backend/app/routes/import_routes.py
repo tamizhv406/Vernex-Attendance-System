@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.services.import_service import PERSON_SPECS, SPECS, ImportSpec, run_import, summary_message, template_file
+from app.utils import rate_limit
 from app.utils.errors import safe_error_text, where_it_happened
 from app.utils.spreadsheet import MAX_FILE_BYTES, ImportFileError, read_sheet
 
@@ -53,7 +54,7 @@ def template_download(spec: ImportSpec, file_format: str):
     return Response(content, media_type=media_type, headers={"Content-Disposition": f'attachment; filename="{filename}"', "Cache-Control": "no-store"})
 
 
-@router.post("/courses/upload")
+@router.post("/courses/upload", dependencies=[Depends(rate_limit.uploads)])
 def upload_courses(file: UploadFile | None = File(None), db: Session = Depends(get_db)):
     return import_upload(SPECS["courses"], file, db)
 
@@ -63,7 +64,7 @@ def courses_template(file_format: str = Query("xlsx", alias="format")):
     return template_download(SPECS["courses"], file_format)
 
 
-@router.post("/batches/upload")
+@router.post("/batches/upload", dependencies=[Depends(rate_limit.uploads)])
 def upload_batches(file: UploadFile | None = File(None), db: Session = Depends(get_db)):
     return import_upload(SPECS["batches"], file, db)
 
@@ -73,7 +74,7 @@ def batches_template(file_format: str = Query("xlsx", alias="format")):
     return template_download(SPECS["batches"], file_format)
 
 
-@router.post("/users/upload")
+@router.post("/users/upload", dependencies=[Depends(rate_limit.uploads)])
 def upload_people(person_type: str | None = None, file: UploadFile | None = File(None), db: Session = Depends(get_db)):
     return import_upload(person_spec(person_type), file, db)
 

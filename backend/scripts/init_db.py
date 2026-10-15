@@ -8,7 +8,9 @@ if str(ROOT) not in sys.path:
 from app.schema import init_database_schema
 
 def main():
-    init_database_schema()
+    # Creates what is missing and runs the repair statements of app/schema.py, also on PostgreSQL,
+    # where the backend itself only checks the schema when it starts. Needs an account that owns the tables.
+    init_database_schema(upgrade=True)
     print("Database schema is ready")
 
 if __name__ == "__main__":

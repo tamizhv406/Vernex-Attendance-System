@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { CLIENT_HEADERS, LOGOUT_UNCONFIRMED, PASSWORD_CHANGED, SESSION_ENDED, UNREACHABLE, createSession, homeFor, landingPage, mayOpen, passwordProblem, screenFor, visibleGroups } from "./auth.js";
+import { CLIENT_HEADERS, IDLE_ENDED, LOGOUT_UNCONFIRMED, PASSWORD_CHANGED, SESSION_ENDED, UNREACHABLE, createSession, homeFor, landingPage, mayOpen, passwordProblem, screenFor, visibleGroups } from "./auth.js";
 
 const ASHA = { id: 1, email: "asha@example.com", full_name: "Asha Example", role: "admin", must_change_password: false };
 const OWNER = { ...ASHA, id: 2, email: "owner@example.com", role: "super_admin" };
@@ -516,4 +516,92 @@ test("a new password is checked before it is sent, by the rules the backend also
   assert.equal(passwordProblem("ten chars!", "asha@example.com"), "");
   assert.equal(passwordProblem("p".repeat(128), "asha@example.com"), "");
   assert.equal(passwordProblem("asha@example.com"), "");
+});
+
+// ---- idle consoles (task S-16) -------------------------------------------------------------------
+
+// A console on a clock of its own: advance(ms) moves time, fire() runs the one pending timer.
+async function idleWorld(idleLimit = 30 * 60000) {
+  let clock = 1_000_000;
+  const backend = fakeBackend();
+  const timers = [];
+  const session = createSession({
+    send: backend.send,
+    remember: { get: () => true, set() {} },
+    setTimer: (run, wait) => { const timer = { run, wait }; timers.push(timer); return timer; },
+    clearTimer: timer => { const at = timers.indexOf(timer); if (at >= 0) timers.splice(at, 1); },
+    now: () => clock,
+    idleLimit
+  });
+  backend.on("/auth/login", signedIn());
+  backend.on("/auth/refresh", signedIn("token-2"));
+  backend.on("/auth/logout", { status: 200, body: { success: true } });
+  await session.login("asha@example.com", "x");
+  const fire = async () => {
+    const [timer] = timers;
+    clock += timer.wait;
+    timer.run();
+    await new Promise(resolve => setTimeout(resolve, 5));
+    return timer.wait;
+  };
+  return { backend, timers, session, fire, advance: ms => { clock += ms; } };
+}
+
+test("a console nobody touches for 30 minutes logs out, on this device and on the server", async () => {
+  const { backend, session, fire } = await idleWorld();
+
+  // Renewed at 14 and 28 minutes, then the timer is set for the 30th minute and goes off there.
+  assert.deepEqual([await fire(), await fire(), await fire()], [840000, 840000, 120000]);
+
+  assert.deepEqual(session.snapshot(), { state: "out", account: null, notice: IDLE_ENDED });
+  assert.equal(backend.to("/auth/refresh").length, 2);
+  assert.equal(backend.to("/auth/logout").length, 1);
+  assert.match(IDLE_ENDED, /30 minutes without activity/);
+});
+
+test("a click or a key keeps the console logged in", async () => {
+  const { backend, session, fire, advance } = await idleWorld();
+
+  for (let round = 0; round < 6; round += 1) {
+    advance(600000);
+    session.touch();
+    await fire();
+  }
+
+  assert.equal(session.snapshot().state, "in");
+  assert.equal(backend.to("/auth/logout").length, 0);
+});
+
+test("activity after the idle timer was set only sets it again", async () => {
+  const { session, timers, fire, advance } = await idleWorld(20 * 60000);
+  await fire(); // renewal at 14 min; the next timer is for the idle limit, 6 minutes on
+  assert.equal(timers[0].wait, 360000);
+
+  advance(-60000); // fire() adds the wait back: the touch happens one minute before the limit
+  session.touch();
+  await fire();
+
+  assert.equal(session.snapshot().state, "in");
+});
+
+test("a running scanner keeps the console awake for as long as it runs", async () => {
+  const { session, fire } = await idleWorld();
+  session.keepAwake("scanner", true);
+
+  for (let round = 0; round < 10; round += 1) await fire();
+  assert.equal(session.snapshot().state, "in");
+
+  // Stopped: idle time counts from then.
+  session.keepAwake("scanner", false);
+  const waits = [await fire(), await fire(), await fire()];
+  assert.deepEqual(waits, [840000, 840000, 120000]);
+  assert.equal(session.snapshot().notice, IDLE_ENDED);
+});
+
+test("an idle limit of 0 never logs out", async () => {
+  const { session, fire } = await idleWorld(0);
+
+  for (let round = 0; round < 10; round += 1) await fire();
+
+  assert.equal(session.snapshot().state, "in");
 });

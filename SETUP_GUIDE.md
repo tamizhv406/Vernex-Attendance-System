@@ -77,7 +77,19 @@ cd backend
 .\.venv\Scripts\python scripts\test_supabase_connection.py
 ```
 
-Tables are created automatically on first start in either case.
+With SQLite the tables are created automatically on first start. With PostgreSQL the backend creates
+and changes nothing: first run `backend\migrations\full_schema.sql` in Supabase's SQL editor (a new,
+empty database) or the numbered files it does not have yet, up to `008_row_level_security.sql`. Then
+check, without changing anything and without showing any secret:
+
+```powershell
+cd backend
+.venv\Scripts\python scripts\check_database.py
+```
+
+It says whether the connection works, whether every table, column, index and row level security
+setting is in place, and which rights the backend's account has. The backend refuses to start, and
+says what is missing, when the schema is not ready.
 
 ### First login
 

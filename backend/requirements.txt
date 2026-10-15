@@ -1,18 +1,26 @@
-fastapi
-uvicorn
-sqlalchemy
-psycopg2-binary
-python-dotenv
-pydantic
-python-multipart
-requests
-opencv-python
-numpy
+# Exact versions: the ones every test, benchmark and accuracy figure of this version was measured with
+# (October 2026, Python 3.10). A face model gives slightly different vectors under another TensorFlow
+# or PyTorch, and the thresholds in app/config.py were set on these. Upgrade on purpose, then run the
+# tests and scripts/evaluate_recognition.py again before trusting the numbers.
+fastapi==0.143.0
+uvicorn==0.54.0
+sqlalchemy==2.0.54
+psycopg2-binary==2.9.13
+python-dotenv==1.2.4
+pydantic==2.14.0
+python-multipart==0.0.32
+requests==2.34.2
+opencv-python==5.0.0.93
+numpy==2.2.6
+pillow==12.3.0
 deepface==0.0.101
-tf-keras
-ultralytics
-openpyxl
-argon2-cffi
-pyjwt
-pytest
-httpx2
+tensorflow==2.21.0
+tf-keras==2.21.0
+ultralytics==8.4.175
+torch==2.14.1
+torchvision==0.29.1
+openpyxl==3.1.5
+argon2-cffi==25.1.0
+pyjwt==2.15.1
+pytest==9.1.1
+httpx2==2.13.1

@@ -387,6 +387,12 @@ def refresh(db: Session, refresh_token: str | None) -> Login:
     if not row or not _usable(row[0], row[1], now):
         raise AuthError(401, SESSION_ENDED)
     session, account = row
+    if settings.auth_idle_minutes > 0 and session.last_used_at and now - session.last_used_at > timedelta(minutes=settings.auth_idle_minutes):
+        # Unused for too long: the login ends here, as a logout would end it.
+        session.revoked_at = now
+        db.commit()
+        forget_session(session.id)
+        raise AuthError(401, SESSION_ENDED)
     access_token, seconds = issue_access_token(account, session, now)
     session.last_used_at = now
     db.commit()

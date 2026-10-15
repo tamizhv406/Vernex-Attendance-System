@@ -69,6 +69,12 @@ def _now() -> datetime:
     return auth_service.clock()
 
 
+def _after(previous, now) -> datetime:
+    # A change is always later than the one before, even within one tick of the clock (about 15 ms
+    # on Windows), so "last change" orders and compares the way it happened.
+    return max(now, previous + timedelta(microseconds=1)) if previous else now
+
+
 # ---- what is typed ------------------------------------------------------------------------------
 
 def _text(value) -> str:
@@ -225,7 +231,7 @@ def _comment(db: Session, actor: Actor, issue: Issue, body) -> IssueComment:
         raise IssueError(409, CLOSED)
     now = _now()
     comment = IssueComment(issue_id=issue.id, author_id=actor.id, body=clean_comment(body), created_at=now)
-    issue.updated_at = now
+    issue.updated_at = _after(issue.updated_at, now)
     db.add(comment)
     db.commit()
     return comment
@@ -325,7 +331,7 @@ def update(db: Session, actor: Actor, issue_id: int, *, status=None, resolution_
         changed = True
     if not changed:
         return issue
-    issue.updated_at = now
+    issue.updated_at = _after(issue.updated_at, now)
     db.commit()
     return issue
 

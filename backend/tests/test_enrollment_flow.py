@@ -461,7 +461,8 @@ def test_a_second_camera_cannot_mix_into_a_capture_being_checked(db_session, cam
 def test_straight_steps_refuse_a_turned_head():
     quality = {"face_ratio": 0.15, "center_x_ratio": 0.5}
 
-    assert check_pose(None, quality, "front", 0.08) == (False, "Look straight at the camera.")
+    assert check_pose(None, quality, "front", 0.08) == (False, "Look straight into the camera: turn your head slightly to your right.")
+    assert check_pose(None, quality, "close", -0.08) == (False, "Look straight into the camera: turn your head slightly to your left.")
     assert check_pose(None, quality, "front", 0.02) == (True, None)
     assert check_pose(None, quality, "left", 0.30) == (False, "Too far. Turn back a little towards the camera.")
 
@@ -621,3 +622,23 @@ def test_a_cancelled_quick_enrollment_saves_nothing(db_session, camera, student)
     face_routes.cancel_enrollment(student.id, db_session)
 
     assert db_session.query(FaceEmbedding).count() == 0 and db_session.query(FaceEnrollment).count() == 0
+
+
+def test_starting_again_within_one_clock_tick_is_still_a_new_start(db_session, student, monkeypatch):
+    # Windows' clock can give the same time to two calls a few milliseconds apart; the restart must
+    # still change started_at, which is how the audit log sees it.
+    from datetime import datetime
+
+    frozen = datetime(2026, 10, 15, 12, 0, 0)
+
+    class Frozen(datetime):
+        @classmethod
+        def utcnow(cls):
+            return frozen
+
+    monkeypatch.setattr(face_routes, "datetime", Frozen)
+    face_routes.start_enrollment(student.id, db_session)
+    first = face_routes.latest_enrollment(db_session, student.id).started_at
+    face_routes.start_enrollment(student.id, db_session)
+
+    assert face_routes.latest_enrollment(db_session, student.id).started_at > first

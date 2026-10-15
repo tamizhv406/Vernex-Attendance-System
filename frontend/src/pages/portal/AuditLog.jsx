@@ -50,7 +50,7 @@ export default function AuditLogPage() {
     <Card title="Entries" subtitle={data ? rangeLabel(page, AUDIT_PAGE_SIZE, data.total) : "Newest first."}>
       {state === "error"
         ? <ErrorState title="Could not load the audit log" message={entries.error.message} onRetry={entries.reload} />
-        : <DataTable loading={state === "loading"} caption="Audit log entries" columns={["When", "Who", "Action", "About", "Details", "From"]} rows={items.map(entry => [
+        : <DataTable loading={state === "loading"} caption="Audit log entries" columns={["When", "Who", "Action", "About", "Details", "From"]} rowKeys={items.map(entry => entry.id)} rows={items.map(entry => [
           <time dateTime={entry.created_at} className="whitespace-nowrap font-semibold tabular-nums text-ink">{whenText(entry.created_at)}</time>,
           <span className="break-words">{actorText(entry)}</span>,
           <span className="font-semibold text-ink">{entry.action_label}</span>,

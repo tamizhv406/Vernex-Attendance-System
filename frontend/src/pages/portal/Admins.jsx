@@ -192,7 +192,7 @@ export default function AdminsPage({ account: me, notify }) {
       </div>
       {state === "error"
         ? <ErrorState title="Could not load the accounts" message={list.error.message} onRetry={refresh} />
-        : <DataTable loading={state === "loading"} caption="Admin accounts" columns={["Admin", "Role", "Status", "Last login", "Actions"]} rows={rows}
+        : <DataTable loading={state === "loading"} caption="Admin accounts" columns={["Admin", "Role", "Status", "Last login", "Actions"]} rowKeys={accounts.map(account => account.id)} rows={rows}
           empty={filtered
             ? <EmptyState icon={UserCog} title="No account matches" message="Try another search, or show all statuses and roles." />
             : <EmptyState icon={UserCog} title="No accounts yet" message="Add the first admin with the button above." />} />}

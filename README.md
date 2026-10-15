@@ -31,12 +31,20 @@ In the password, write `@` as `%40` and `%` as `%25`. Without `DATABASE_URL` the
 
 ```powershell
 python scripts/create_jwt_secret.py          # writes JWT_SECRET into backend/.env without showing it
-python scripts/test_supabase_connection.py   # should print "connection successful"
+python scripts/check_database.py             # read-only: connection, schema, row level security (no secrets shown)
 python scripts/create_super_admin.py         # asks for an email, a name and a password: the first login
 uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
-Tables are created automatically on startup. Wait for `face models ready` in the log (about 30 seconds;
+On the local SQLite file the tables are created automatically on startup. On PostgreSQL (Supabase)
+the backend creates and changes nothing: run `backend/migrations/full_schema.sql` once on a new, empty
+database (in Supabase's SQL editor), or the numbered files it does not have yet (up to
+`008_row_level_security.sql`) on an older one. If anything is missing, the backend refuses to start
+and names it; `scripts/check_database.py` shows the same without starting anything. Run the backend
+as **one** process (no `--workers`): enrollments in progress and the scanner's tracking are kept in
+its memory. For use beyond your own computer, serve the built console with `deploy/Caddyfile`
+(HTTPS, security headers) instead of the development server; `docs/RUNBOOK.md` has the steps,
+backups, secret rotation and the least-privilege database account. Wait for `face models ready` in the log (about 30 seconds;
 the first ever start also downloads ~100 MB of model weights). http://localhost:8000/health answers
 `"status":"starting"` until then and `"status":"ok"` after. The backend refuses to start without a
 `JWT_SECRET`, and nobody can log in before a super admin exists: see "Logging in and accounts".
@@ -241,17 +249,26 @@ went wrong is written to the backend's log under that reference, without the dat
    same person as the frames before. A refused frame says why ("Move closer", "Improve lighting",
    "One person at a time", "Pose not accepted" ...). Nothing is saved until every pose passes, and the
    previous enrollment stays in use until then. A face that is already enrolled under another person is refused.
-3. **Attendance Scanner.** Pick course and batch, press Start Session, and point the camera at the class.
+3. **Attendance Scanner.** Pick course and batch, optionally a "Late after" time (otherwise the batch's
+   timetable decides, if it has one), press Start Session, and point the camera at the class.
    Every face in the frame gets its own box and its own verdict: green = identity verified,
    amber = still being verified, red = not verified (unknown person, "Unable to verify identity", or a
-   photo), grey = too small, dark or blurred to judge.
+   photo), grey = too small, dark or blurred to judge. A camera that faces the person (a webcam, a
+   front camera) is shown like a mirror, as in enrollment; a phone's rear camera is shown as it is.
 4. **Marking.** A student is marked only after the same face has been identified as that student in
    3 separate looks in a row, all of them live, with an average score of at least 0.75, **and** has
-   followed the head-turn instruction shown on its box (blue: "look straight", then "turn head to
-   YOUR LEFT" or "RIGHT"): `present`,
+   followed the head-turn instruction shown on its box (blue: "hold still, facing the camera", then
+   "turn head to YOUR LEFT" or "RIGHT"): `present`,
    `late` after the session's grace time, `absent` after its end time. One record per student, session
-   and day, enforced by the database.
-5. **Stop Session**, then see **Reports** for the records by date, course and batch.
+   and day, enforced by the database. A session from an earlier day that was never stopped accepts no
+   more scans: start a new one.
+5. **Marking by hand.** Below the camera, every student of the batch has Present / Late / Absent
+   buttons while the session runs: for a student who is locked, not recognized or has no face
+   enrolled, and to correct a mark. Later, **Attendance Records** with a course, a batch and a date
+   lists that day's sessions with the same register. A hand mark always belongs to a session and its
+   date, is stored as "By hand" (never as a face scan) and is written to the audit log with who made it
+   and what it was before.
+6. **Stop Session**, then see **Attendance Records** for the records by date, course and batch.
 
 Courses, batches and people can also be added many at a time from a spreadsheet: see
 "Bulk upload" below.
@@ -437,8 +454,12 @@ identity look and not as an answer to the challenge) and `live`. If the model ca
 fails and nobody is marked. Enrollment stores a reference face only from `live` frames.
 
 **2. Head-turn challenge, on the same tracked face.** Each student is given one direction per session,
-drawn at random (left or right). The face must first be seen straight, then turn that way, within 10
-seconds, while it stays on the same track, keeps matching the same student and keeps looking live.
+drawn at random (left or right). The face must first hold still (for about half a second, roughly
+facing the camera), then turn that way by at least 0.08 **from where it was**, within 10 seconds,
+while it stays on the same track, keeps matching the same student and keeps looking live. Until
+October 2026 the start had to be an absolute "straight" (turn under 0.04); the only real attempt
+measured 0.17 to 0.24 the whole time (a student reading the screen beside the camera), so nobody could
+be marked. Coming back towards the camera from an angled start is a new start, not a wrong answer.
 
 - A still picture, printed or on a screen, cannot do this at all.
 - Tilting a flat picture shifts the eyes a little like a turn does, so a "turn" only counts if the
@@ -642,10 +663,39 @@ has, keep the full enrollment available and compare: enroll some students each w
 ## Database, backups and upgrades
 
 - The app uses the local SQLite file `backend/vernex_attendance.db` unless `DATABASE_URL` is set.
+- **PostgreSQL / Supabase (since October 2026).** The backend no longer creates or changes anything
+  when it starts on PostgreSQL. It checks, with reads only, that every table and column it needs is
+  there, that the duplicate-attendance index exists, that row level security is on for every table,
+  and that its own account is not shut out by it; if not, it refuses to start and names what is
+  missing. The schema comes from `backend/migrations`: `full_schema.sql` for a new, empty database,
+  otherwise the numbered files the database does not have yet, in order. `DATABASE_AUTO_UPGRADE=true`
+  (or `python scripts/init_db.py` once) brings back the old behaviour of changing the schema at every
+  start, which needs an account that owns the tables. `python scripts/check_database.py` prints the
+  same check plus which rights the account has, in a read-only transaction, without the address, the
+  user or the password.
+- `008_row_level_security.sql` switches row level security on for **every** table. Supabase gives its
+  public `anon` role rights on the tables of the `public` schema; a table without row level security
+  could be read and changed by anyone with the project's URL and its public key: students, phone
+  numbers, attendance, face vectors. Shown on PostgreSQL 16 with those grants in `tests/test_postgres.py`.
+- `003_course_batch_attendance_restructure.sql` failed on PostgreSQL ("invalid reference to
+  FROM-clause entry for table r") until October 2026; it now runs, and all of 001 to 008 run in order
+  and a second time.
+- Attendance times (`marked_time`) are the school's clock (`DEFAULT_TIMEZONE`). On a PostgreSQL server
+  set to UTC, as Supabase is, they were stored 5.5 hours early until October 2026; SQLite was right.
+- `009_app_role.sql` creates `vernex_app`, the account the backend should use: it reads and writes rows
+  through a row level security policy of its own, cannot create, change or drop anything, and may only
+  add to the audit log. Supabase's public roles still get nothing. Connections to a remote PostgreSQL
+  server are always encrypted. Backups and restore: `docs/RUNBOOK.md` (tested with PostgreSQL 17.6).
+- `tests/test_postgres.py` runs the schema files, the start-up check, row level security, the
+  `vernex_app` account, concurrent marking, the issue row lock and the console over HTTP (as the owner
+  and as `vernex_app`) on a real PostgreSQL; checked on 16.2 and on 17.6, Supabase's version. It runs only when
+  `VERNEX_TEST_POSTGRES_URL` points to a server on this computer (it creates and drops its own
+  databases, and refuses any other host); otherwise it is skipped.
 - Back it up before any upgrade by copying that file while the backend is stopped. Copies made during
   this work are in `backend/backups/`. To go back, stop the backend and copy a backup over the file.
-- On start the backend adds what a newer version needs (the `capture_meta` column on `face_embeddings`
-  and a unique index on attendance records) and changes no existing row. If the index cannot be created
+- On start (SQLite, or PostgreSQL with `DATABASE_AUTO_UPGRADE=true`) the backend adds what a newer
+  version needs (the `capture_meta` column on `face_embeddings` and a unique index on attendance
+  records) and changes no existing row. If the index cannot be created
   because duplicate records already exist, it says so at startup and leaves the records alone.
   `backend/migrations/004_capture_meta_and_unique_attendance.sql` is the same change as SQL for PostgreSQL.
 - Bulk upload, the contact-number rule and the editing fixes add no table and no column, and change
@@ -677,10 +727,8 @@ has, keep the full enrollment available and compare: enroll some students each w
   its comments with it; deleting an account that has issues assigned to it leaves them unassigned.
   On PostgreSQL the start switches row level security on for both tables, with no policy.
   `backend/migrations/007_issues.sql` is the same change as SQL (it needs 005 first), and
-  `full_schema.sql` includes it. Run on SQLite only so far: on PostgreSQL, the tables, their
-  constraints, the `ON DELETE` rules (which SQLite does not enforce here) and row level security
-  have still to be checked on the real database. **The first start of the backend against Supabase
-  creates the two tables and switches row level security on, as it did for 005 and 006.**
+  `full_schema.sql` includes it. Checked on a local PostgreSQL 16 (`tests/test_postgres.py`), not yet
+  on Supabase. On PostgreSQL the backend no longer creates them itself: apply 007 (and 008).
 - Logins need two more Python packages, `argon2-cffi` and `pyjwt` (both in
   `backend/requirements.txt`), and a `JWT_SECRET` in `backend/.env`. In an installation made
   before they were added:

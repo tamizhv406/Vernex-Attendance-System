@@ -58,7 +58,7 @@ function Sidebar({ page, setPage, logout, account, badges }) {
     <div className="px-2 pt-2"><Brand />{isPortalPage(page) && <PortalMark />}</div>
     <nav aria-label="Main" className="mt-6 flex-1 space-y-5 overflow-y-auto pr-1">
       {navGroupsFor(account.role, page).map(group => <div key={group.label}>
-        <p className="mb-1.5 px-3.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400">{group.label}</p>
+        <p className="mb-1.5 px-3.5 text-[11px] font-semibold uppercase tracking-wider text-ink-muted">{group.label}</p>
         <div className="grid gap-1">{group.items.map(id => <SidebarItem key={id} id={id} page={page} setPage={setPage} badges={badges} />)}</div>
       </div>)}
     </nav>
@@ -138,7 +138,7 @@ function MoreSheet({ page, setPage, logout, account, onClose, onReport, badges }
       </div>
       <nav aria-label="All pages" className="mt-5 space-y-4">
         {navGroupsFor(account.role, page).map(group => <div key={group.label}>
-          <p className="mb-1.5 px-1 text-[11px] font-semibold uppercase tracking-wider text-slate-400">{group.label}</p>
+          <p className="mb-1.5 px-1 text-[11px] font-semibold uppercase tracking-wider text-ink-muted">{group.label}</p>
           <div className="grid grid-cols-2 gap-2">
             {group.items.map(id => {
               const { label, icon: Icon } = navEntry(id, portal);

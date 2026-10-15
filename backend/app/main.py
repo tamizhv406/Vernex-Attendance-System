@@ -1,4 +1,5 @@
 import threading
+from contextlib import asynccontextmanager
 
 from sqlalchemy import text
 from fastapi import FastAPI, Depends, Request
@@ -18,6 +19,8 @@ from app.services import auth_service, face_service
 from app.services.face_service import warm_up
 from app.utils import access_log
 from app.utils.errors import ServerErrors
+from app.utils.security_headers import SecurityHeaders
+from app.utils.upload_limit import UploadLimit
 
 # The web server's access log keeps the path of every request, query string included. Searches and
 # filters (an email typed into the Admins search) are not written there: only their names are.
@@ -30,10 +33,26 @@ def docs_addresses(enabled: bool) -> dict:
     return {} if enabled else {"docs_url": None, "redoc_url": None, "openapi_url": None}
 
 
-app = FastAPI(title="Vernex Smart Attendance AI", version="0.1.0", **docs_addresses(settings.api_docs))
+def startup():
+    # Before anything else: without the signing secret nobody could log in, so the backend says so
+    # and stops instead of starting up useless.
+    auth_service.signing_key()
+    init_database_schema()
+    threading.Thread(target=warm_up, daemon=True).start()
+
+
+@asynccontextmanager
+async def lifespan(app):
+    startup()
+    yield
+
+
+app = FastAPI(title="Vernex Smart Attendance AI", version="0.1.0", lifespan=lifespan, **docs_addresses(settings.api_docs))
 
 # Added first so that it sits inside the CORS middleware: its answers get the CORS headers too.
 app.add_middleware(ServerErrors)
+# Camera frames: refused by their declared length before the body is read (inside CORS, like ServerErrors).
+app.add_middleware(UploadLimit, limit=settings.face_max_upload_bytes)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins(settings.frontend_origin),
@@ -41,15 +60,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
-@app.on_event("startup")
-def startup():
-    # Before anything else: without the signing secret nobody could log in, so the backend says so
-    # and stops instead of starting up useless.
-    auth_service.signing_key()
-    init_database_schema()
-    threading.Thread(target=warm_up, daemon=True).start()
+# Outermost, so that every answer has them, refusals and errors included.
+app.add_middleware(SecurityHeaders)
 
 
 def repeats_nothing(path: str) -> bool:
@@ -72,6 +84,9 @@ async def malformed_request(request: Request, error: RequestValidationError):
 # route of the application and fails if one is open without being named here.
 PUBLIC_ROUTES = {
     ("GET", "/health"),
+    # For a process supervisor or an uptime monitor: one word each, nothing about what is behind it.
+    ("GET", "/health/live"),
+    ("GET", "/health/ready"),
     ("POST", "/auth/login"),
     # These two are answered on the strength of the refresh cookie, which only a logged-in browser has.
     ("POST", "/auth/refresh"),
@@ -95,6 +110,25 @@ def health(db: Session = Depends(get_db)):
         return JSONResponse(status_code=503, content={"success": False, "message": "unavailable", "data": {"status": "unavailable"}})
     status = "ok" if face_service.models_ready else "starting"
     return {"success": True, "message": status, "data": {"status": status}}
+
+
+@app.get("/health/live")
+def health_live():
+    # The process is up and answering. Says nothing about the database or the models.
+    return {"success": True, "message": "ok", "data": {"status": "ok"}}
+
+
+@app.get("/health/ready")
+def health_ready(db: Session = Depends(get_db)):
+    # Ready to take attendance: the database answers and the face models are loaded. 503 otherwise,
+    # so a monitor or a load balancer can wait for it.
+    try:
+        db.execute(text("SELECT 1"))
+    except Exception:
+        return JSONResponse(status_code=503, content={"success": False, "message": "unavailable", "data": {"status": "unavailable"}})
+    if not face_service.models_ready:
+        return JSONResponse(status_code=503, content={"success": False, "message": "starting", "data": {"status": "starting"}})
+    return {"success": True, "message": "ok", "data": {"status": "ok"}}
 
 
 @app.get("/health/details", dependencies=logged_in)

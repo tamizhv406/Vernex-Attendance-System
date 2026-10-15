@@ -15,6 +15,8 @@ from test_recognition_flow import FRAME_BASE64, SEATS, VECTORS, FakeRequest, bat
 
 LEFT, RIGHT = 0.10, -0.10
 REAL_PICK_DIRECTION = tracking_service.pick_direction
+# Each scan is one second after the last, so two looks in the same pose hold it still long enough
+# (CHALLENGE_STEADY_SECONDS) to be the starting pose of the challenge.
 
 
 def look(seat, who, turn=0.0, squeeze=1.0):
@@ -75,14 +77,15 @@ def test_identity_then_the_right_turn_marks_the_student(db_session, camera):
 
 
 def test_the_turn_alone_marks_nobody(db_session, camera):
-    # The challenge is answered at once, but identity still needs its separate looks.
+    # The challenge is answered as soon as the turn is asked for, but identity still needs its
+    # separate looks; the turn itself is not one of them.
     session, _ = batch_of(db_session, ["Arun"])
-    scan(db_session, camera, session, [look(0, "Arun")])
+    held = [scan(db_session, camera, session, [look(0, "Arun")]) for _ in range(2)]
+    assert [one(answer)["challenge"]["action"] for answer in held] == ["straight", "turn"]
 
     after_turn = scan(db_session, camera, session, [look(0, "Arun", LEFT)])
-    assert results(after_turn) == ["pending"] and records(db_session) == []
+    assert results(after_turn) == ["pending"] and one(after_turn)["confirm_hits"] == 2 and records(db_session) == []
 
-    scan(db_session, camera, session, [look(0, "Arun")])
     assert results(scan(db_session, camera, session, [look(0, "Arun")])) == ["verified"]
 
 
@@ -101,6 +104,7 @@ def test_turning_the_wrong_way_fails_and_then_locks(db_session, camera):
     outcomes = []
     for _ in range(3):
         scan(db_session, camera, session, [look(0, "Arun")], gap=4.0)
+        scan(db_session, camera, session, [look(0, "Arun")])
         outcomes.append(one(scan(db_session, camera, session, [look(0, "Arun", RIGHT)]))["result"])
     assert outcomes == ["challenge_failed", "challenge_failed", "locked"] and records(db_session) == []
 
@@ -126,11 +130,13 @@ def test_a_wrong_answer_wipes_what_was_collected(db_session, camera):
 
 
 def test_a_head_already_turned_is_not_an_answer(db_session, camera):
+    # Held still, a turned head is only where the challenge starts from: the answer is a further turn.
     session, _ = batch_of(db_session, ["Arun"])
 
     answers = [scan(db_session, camera, session, [look(0, "Arun", LEFT)]) for _ in range(6)]
 
-    assert all(one(answer)["challenge"] == {"action": "straight"} for answer in answers)
+    assert one(answers[0])["challenge"] == {"action": "straight"}
+    assert all(one(answer)["challenge"] == {"action": "turn", "direction": "left"} for answer in answers[1:])
     assert records(db_session) == []
 
 
@@ -248,9 +254,10 @@ def test_a_photo_verdict_after_the_challenge_wipes_the_challenge_too(db_session,
 def test_an_answer_that_comes_too_late_does_not_count(db_session, camera):
     session, _ = batch_of(db_session, ["Arun"])
     scan(db_session, camera, session, [look(0, "Arun")])
+    assert one(scan(db_session, camera, session, [look(0, "Arun")]))["challenge"]["action"] == "turn"
     # The face stays in view (the track lives on) but answers only after the time is up.
-    for _ in range(11):
-        scan(db_session, camera, session, [look(0, "Arun", 0.05)])
+    for _ in range(tracking_service.CHALLENGE_SECONDS + 1):
+        scan(db_session, camera, session, [look(0, "Arun")])
 
     late = scan(db_session, camera, session, [look(0, "Arun", LEFT)])
 
@@ -328,3 +335,82 @@ def test_a_liveness_model_that_fails_marks_nobody(db_session, camera, monkeypatc
     answers = [scan(db_session, camera, session, [look(0, "Arun", turn)]) for turn in (0, 0, 0, LEFT)]
 
     assert all(answer["success"] is False for answer in answers) and records(db_session) == []
+
+
+# A student who reads the scanner's screen beside the camera faces the camera at an angle all the
+# time. The only real attempt so far (15 October 2026) measured a turn of 0.17 to 0.24 throughout,
+# which an absolute "look straight" never accepted, so nobody could be marked.
+ANGLED = 0.20
+
+
+@pytest.mark.parametrize("direction, answer", [("left", ANGLED + 0.10), ("right", ANGLED - 0.12)])
+def test_a_student_facing_the_camera_at_an_angle_can_answer(db_session, camera, direction, answer):
+    camera["directions"] = iter([direction])
+    session, people = batch_of(db_session, ["Arun"])
+
+    held = [scan(db_session, camera, session, [look(0, "Arun", ANGLED)]) for _ in range(3)]
+    assert [one(item)["challenge"]["action"] for item in held] == ["straight", "turn", "turn"]
+    assert one(held[-1])["confirm_hits"] == 3
+
+    marked_now = scan(db_session, camera, session, [look(0, "Arun", answer)])
+
+    assert results(marked_now) == ["verified"] and one(marked_now)["record"]["person_id"] == people["Arun"].id
+
+
+def test_turning_back_to_the_camera_is_a_new_start_not_a_wrong_answer(db_session, camera):
+    # Asked for LEFT while already turned to the left, the student first faces the camera.
+    session, people = batch_of(db_session, ["Arun"])
+    for _ in range(3):
+        scan(db_session, camera, session, [look(0, "Arun", ANGLED)])
+
+    back = scan(db_session, camera, session, [look(0, "Arun", 0.0)])
+    assert one(back)["result"] == "challenge" and one(back)["challenge"] == {"action": "straight"}
+
+    assert one(scan(db_session, camera, session, [look(0, "Arun", 0.0)]))["challenge"]["action"] == "turn"
+    assert results(scan(db_session, camera, session, [look(0, "Arun", LEFT)])) == ["verified"]
+    assert tracking_service.challenges[(session.id, people["Arun"].id)]["failures"] == 0
+
+
+def test_from_an_angle_the_wrong_way_still_fails(db_session, camera):
+    # Asked for LEFT from a pose turned to the left; turning past the camera to the right is wrong.
+    session, _ = batch_of(db_session, ["Arun"])
+    for _ in range(3):
+        scan(db_session, camera, session, [look(0, "Arun", ANGLED)])
+
+    assert results(scan(db_session, camera, session, [look(0, "Arun", RIGHT)])) == ["challenge_failed"]
+    assert records(db_session) == []
+
+
+def test_a_face_turned_far_from_the_camera_is_never_a_start(db_session, camera):
+    session, _ = batch_of(db_session, ["Arun"])
+
+    answers = [scan(db_session, camera, session, [look(0, "Arun", turn)]) for turn in (0.30, 0.31, 0.30, 0.42, 0.30)]
+
+    assert all(one(answer)["challenge"] == {"action": "straight"} for answer in answers) and records(db_session) == []
+
+
+def test_a_head_still_moving_is_not_a_start(db_session, camera):
+    session, _ = batch_of(db_session, ["Arun"])
+
+    answers = [scan(db_session, camera, session, [look(0, "Arun", turn)]) for turn in (-0.12, -0.06, 0.0, 0.06, 0.12)]
+
+    assert all(one(answer)["challenge"] == {"action": "straight"} for answer in answers) and records(db_session) == []
+
+
+def test_two_looks_closer_together_than_the_hold_are_not_a_start(db_session, camera):
+    session, _ = batch_of(db_session, ["Arun"])
+    scan(db_session, camera, session, [look(0, "Arun")])
+
+    too_soon = scan(db_session, camera, session, [look(0, "Arun")], gap=tracking_service.CHALLENGE_STEADY_SECONDS / 2)
+
+    assert one(too_soon)["challenge"] == {"action": "straight"}
+
+
+def test_from_an_angle_a_tilted_flat_picture_still_fails(db_session, camera):
+    session, _ = batch_of(db_session, ["Arun"])
+    for _ in range(3):
+        scan(db_session, camera, session, [look(0, "Arun", ANGLED)])
+
+    answer = scan(db_session, camera, session, [look(0, "Arun", ANGLED + 0.10, squeeze=0.75)])
+
+    assert results(answer) == ["challenge_failed"] and records(db_session) == []

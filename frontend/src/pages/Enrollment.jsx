@@ -49,6 +49,9 @@ export default function FaceEnrollment({ data }) {
   const [tick, setTick] = useState(false);
   // "quick": the few poses the backend is set to (front, left, right). "guided": all five.
   const [mode, setMode] = useState("quick");
+  // Face vectors are biometric data: nothing is captured before this is confirmed, for each student.
+  const [consent, setConsent] = useState(false);
+  useEffect(() => { setConsent(false); }, [studentId]);
   const [steps, setSteps] = useState(ENROLLMENT_STEPS);
   // Students enroll their own face, so start on the camera that looks at them.
   const camera = useCamera(Boolean(capture), "user");
@@ -82,7 +85,7 @@ export default function FaceEnrollment({ data }) {
     setMessage("");
     try {
       // The backend decides which poses this enrollment has; the page only follows.
-      const started = await startFaceEnrollment(selected.id, mode);
+      const started = await startFaceEnrollment(selected.id, mode, consent);
       const poses = started?.steps?.length ? started.steps : ENROLLMENT_STEPS;
       setSteps(poses);
       setCapture({ ...ENROLLMENT_FIRST_STEP, step: poses[0], instruction: started?.instruction || ENROLLMENT_FIRST_STEP.instruction });
@@ -217,7 +220,11 @@ export default function FaceEnrollment({ data }) {
               <StatusBadge status={faceEnrolled(selected) ? "Enrolled" : "Pending"} />
             </div>}
             {selected && faceEnrolled(selected) && !capture && <p className="text-xs text-ink-muted">This student already has a face enrolled. It stays in use until a new enrollment is finished.</p>}
-            <Button variant="brand" icon={ScanFace} loading={busy && !capture} disabled={!selected || Boolean(capture)} onClick={start}>{faceEnrolled(selected) ? "Enroll again" : "Start enrollment"}</Button>
+            {selected && !capture && <label className="flex items-start gap-3 rounded-2xl border border-line bg-canvas/60 p-3 text-sm text-ink-soft">
+              <input type="checkbox" className="mt-0.5 h-5 w-5 shrink-0 accent-brand-600" checked={consent} onChange={event => setConsent(event.target.checked)} />
+              <span><span className="font-semibold text-ink">{selected.full_name} agreed to face enrollment</span> (or, for a minor, a parent or guardian did). Their face is stored as numbers for attendance only, and deleted with their record.</span>
+            </label>}
+            <Button variant="brand" icon={ScanFace} loading={busy && !capture} disabled={!selected || Boolean(capture) || !consent} onClick={start}>{faceEnrolled(selected) ? "Enroll again" : "Start enrollment"}</Button>
           </div>
         </Card>
         <Card title="For a good capture">
@@ -269,7 +276,7 @@ export default function FaceEnrollment({ data }) {
     </div>
 
     <Card title="Students in this batch" subtitle={students.length ? `${students.length - pending} of ${students.length} enrolled` : undefined}>
-      <DataTable loading={loadingStudents} caption="Enrollment queue" columns={["Student", "Course", "Batch", "Face", "Action"]} rows={students.map(student => [
+      <DataTable loading={loadingStudents} caption="Enrollment queue" columns={["Student", "Course", "Batch", "Face", "Action"]} rowKeys={students.map(student => student.id)} rows={students.map(student => [
         <Identity name={student.full_name} detail={student.person_code} />,
         student.course_name || "-",
         student.batch_name || "-",

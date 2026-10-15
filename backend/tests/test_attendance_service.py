@@ -244,12 +244,13 @@ def stored_records(client):
 
 @pytest.mark.parametrize("session_type, route, method, status, saved_method", [
     ("regular", "/attendance/mark", "manual", "present", "manual"),
-    ("regular", "/attendance/mark", "face_ai", "present", "face_ai"),
+    # A hand mark is never stored as a face scan, whatever the browser says (it was, until 2026-10).
+    ("regular", "/attendance/mark", "face_ai", "present", "manual"),
     ("regular", "/attendance/mark", "auto_absent", "absent", "auto_absent"),
     ("regular", "/attendance/mark-absent", None, "absent", "auto_absent"),
     ("regular", "/attendance/mark-absent", "manual", "absent", "auto_absent"),
     ("member_visit", "/attendance/mark", "manual", "visited", "manual"),
-    ("member_visit", "/attendance/mark", "face_ai", "visited", "face_ai"),
+    ("member_visit", "/attendance/mark", "face_ai", "visited", "manual"),
     ("member_visit", "/attendance/mark", "auto_absent", "absent", "auto_absent"),
     ("member_visit", "/attendance/mark-absent", None, "absent", "auto_absent"),
     ("member_visit", "/attendance/mark-absent", "manual", "absent", "auto_absent"),

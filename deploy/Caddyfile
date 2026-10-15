@@ -1,0 +1,52 @@
+# Production web server for the Vernex console (tasks AV-04, S-07, S-14).
+#
+# Serves the built console (npm run build -> frontend/dist) over HTTPS and passes /api to the backend,
+# so nothing runs on the Vite development server. With a real domain name Caddy gets and renews a
+# trusted certificate by itself and redirects http to https.
+#
+#   VERNEX_SITE      the address people open: vernex.example.org (real certificate), or for a test on
+#                    this computer: https://localhost:8443 with VERNEX_CERTS=local_certs
+#   VERNEX_CERTS     "local_certs" for a test on this computer (Caddy's own certificate authority,
+#                    trusted by nobody, this computer included); leave unset for a real certificate
+#   VERNEX_DIST      the built console, by default ../frontend/dist (relative to the folder Caddy is
+#                    started in: start it from deploy/, or give an absolute path)
+#   VERNEX_BACKEND   where uvicorn listens, by default 127.0.0.1:8000 (one process: see README)
+#
+#   caddy run --config deploy/Caddyfile --adapter caddyfile
+{
+	{$VERNEX_CERTS}
+	# Never add Caddy's own certificate authority to this computer's trusted certificates (a local
+	# test then shows a browser warning instead). A real certificate does not need it.
+	skip_install_trust
+}
+
+{$VERNEX_SITE:localhost} {
+	encode gzip
+
+	header {
+		# Browsers keep to https for a year once they have seen this site over https.
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+		# The camera for this site only (enrollment and the scanner); nothing else.
+		Permissions-Policy "camera=(self), microphone=(), geolocation=(), payment=(), usb=()"
+		# Everything from this site only (the web font included); no plugin, no framing, no form or
+		# base pointing elsewhere. Only where none is set yet: the
+		# backend answers with a stricter one of its own (nothing may load at all from JSON).
+		?Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+		-Server
+	}
+
+	# The backend. /api is taken off on the way, as the development server does (vite.config.js).
+	handle_path /api/* {
+		reverse_proxy {$VERNEX_BACKEND:127.0.0.1:8000}
+	}
+
+	# The console: every address that is not a file is the single page (/attendance-scanner, /reports ...).
+	handle {
+		root * {$VERNEX_DIST:../frontend/dist}
+		try_files {path} /index.html
+		file_server
+	}
+}

@@ -1,0 +1,8 @@
+attempt,kind,person_code,start,end,notes
+1,enrolled,STU-001,10:02:05,10:02:40,normal light facing the camera
+2,enrolled,STU-002,10:03:00,10:03:45,glasses on; window behind
+3,stranger,,10:04:10,10:05:00,visitor who is not enrolled
+4,print,STU-003,10:05:30,10:06:30,A4 colour print held at arm length
+5,screen,STU-004,10:07:00,10:08:00,phone photo; full brightness
+6,video,STU-005,10:08:30,10:09:30,phone video of STU-005 turning both ways
+7,pair,STU-006;STU-007,10:10:00,10:11:00,two students side by side

@@ -183,19 +183,27 @@ def _changed(enrollment, name) -> bool:
     return inspect(enrollment).attrs[name].history.has_changes()
 
 
+def started(db, enrollment) -> dict:
+    # consent: the account starting it confirmed that the student agreed (face_routes.consent_given).
+    details = {"steps": enrollment.total_steps}
+    if db.info.get("enrollment_consent"):
+        details["consent"] = True
+    return details
+
+
 @event.listens_for(Session, "before_flush")
 def _face_enrollment_events(db: Session, _context, _instances):
     events = []
     for enrollment in db.new:
         if isinstance(enrollment, FaceEnrollment) and enrollment.enrollment_status == "in_progress":
-            events.append(("face_enrollment.started", enrollment, {"steps": enrollment.total_steps}))
+            events.append(("face_enrollment.started", enrollment, started(db, enrollment)))
     for enrollment in db.dirty:
         if not isinstance(enrollment, FaceEnrollment):
             continue
         if enrollment.enrollment_status == "completed" and _changed(enrollment, "enrollment_status"):
             events.append(("face_enrollment.completed", enrollment, {"steps": enrollment.completed_steps}))
         elif enrollment.enrollment_status == "in_progress" and (_changed(enrollment, "enrollment_status") or _changed(enrollment, "started_at")):
-            events.append(("face_enrollment.started", enrollment, {"steps": enrollment.total_steps}))
+            events.append(("face_enrollment.started", enrollment, started(db, enrollment)))
     for enrollment in db.deleted:
         if isinstance(enrollment, FaceEnrollment) and enrollment.enrollment_status == "in_progress":
             events.append(("face_enrollment.cancelled", enrollment, {"steps_done": enrollment.completed_steps or 0}))

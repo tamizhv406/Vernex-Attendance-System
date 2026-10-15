@@ -1,5 +1,9 @@
-from sqlalchemy import inspect, text
+from contextlib import nullcontext
 
+from sqlalchemy import inspect, text
+from sqlalchemy.engine import Engine
+
+from app.config import settings
 from app.database import Base, engine
 from app.models.admin_account import AdminAccount, AdminSession
 from app.models.attendance import AttendanceRecord, AttendanceSession
@@ -257,32 +261,46 @@ POSTGRES_REPAIR_STATEMENTS = [
     """
     CREATE INDEX IF NOT EXISTS idx_attendance_records_course_batch ON attendance_records(course_id, batch_id)
     """,
-    # Row level security switched on, with no policy, for the login tables, the audit log and the
-    # reported issues. It is meant to keep Supabase's own REST API (the anon and authenticated roles)
-    # away from them, so that this backend is the way in; switching it on does not show by itself that
-    # they are kept out. Roles that bypass it (the tables' owner, which this backend connects as, a
-    # superuser, Supabase's service_role) are not affected, and what each role is granted is checked
-    # on the real database in Phase 4 (S-02). Switching it on again where it is on changes nothing.
-    """
-    ALTER TABLE admin_accounts ENABLE ROW LEVEL SECURITY
-    """,
-    """
-    ALTER TABLE admin_sessions ENABLE ROW LEVEL SECURITY
-    """,
-    """
-    ALTER TABLE audit_logs ENABLE ROW LEVEL SECURITY
-    """,
-    """
-    ALTER TABLE issues ENABLE ROW LEVEL SECURITY
-    """,
-    """
-    ALTER TABLE issue_comments ENABLE ROW LEVEL SECURITY
-    """,
+    # Row level security switched on, with no policy, for every table (migration 008). Supabase's own
+    # REST API (the anon and authenticated roles, which have rights on the public schema by default)
+    # then gets no rows, so this backend is the only way in. Roles that bypass it (the tables' owner,
+    # which this backend connects as, a superuser, a role with BYPASSRLS such as Supabase's
+    # service_role) are not affected; schema_problems checks that this backend's role is one of them.
+    # Switching it on again where it is on changes nothing.
+    *[f"ALTER TABLE {name} ENABLE ROW LEVEL SECURITY" for name in (
+        "courses", "batches", "timings", "user_management", "face_enrollments", "face_embeddings",
+        "attendance_sessions", "attendance_records", "sheet_sync_logs",
+        "admin_accounts", "admin_sessions", "audit_logs", "issues", "issue_comments",
+    )],
 ]
 
 
-def init_database_schema(bind=None) -> None:
+# Row level security must be on for every table of the application on PostgreSQL (migration 008).
+ROW_SECURITY_TABLES = tuple(table.name for table in Base.metadata.sorted_tables)
+
+
+class SchemaNotReady(RuntimeError):
+    """The database is missing something the backend needs, and the backend may not add it itself."""
+
+
+def init_database_schema(bind=None, upgrade=None) -> None:
+    # upgrade: may this create and change tables? None means settings.database_auto_upgrade, and when
+    # that is not set: yes for SQLite (the local file), no for PostgreSQL. Without it the schema is
+    # only checked, with reads, and nothing at all is written.
     bind = bind or engine
+    if upgrade is None:
+        upgrade = settings.database_auto_upgrade if settings.database_auto_upgrade is not None else bind.dialect.name == "sqlite"
+    if not upgrade:
+        problems = schema_problems(bind)
+        if problems:
+            raise SchemaNotReady(
+                "The database is not ready for this version of the backend, and nothing was changed: "
+                + "; ".join(problems)
+                + ". Apply the SQL files in backend/migrations (full_schema.sql for a new, empty database; "
+                "otherwise the numbered files the database does not have yet, in order), or run "
+                "scripts/init_db.py once with an account that owns the tables."
+            )
+        return
     Base.metadata.create_all(bind=bind)
 
     if bind.dialect.name == "postgresql":
@@ -290,6 +308,66 @@ def init_database_schema(bind=None) -> None:
             for statement in POSTGRES_REPAIR_STATEMENTS:
                 connection.execute(text(statement))
     upgrade_existing_tables(bind)
+
+
+def schema_problems(bind) -> list:
+    # What this backend needs that the database does not have: tables, columns, the index that keeps
+    # attendance from being written twice, and on PostgreSQL row level security on every table, without
+    # shutting this backend out. Reads only. An empty list means ready. bind: an engine, or a connection that is
+    # already open (scripts/check_database.py reads in one READ ONLY transaction).
+    with (bind.connect() if isinstance(bind, Engine) else nullcontext(bind)) as connection:
+        return problems_seen_by(connection)
+
+
+def problems_seen_by(connection) -> list:
+    inspector = inspect(connection)
+    tables = set(inspector.get_table_names())
+    problems = []
+    for table in Base.metadata.sorted_tables:
+        if table.name not in tables:
+            problems.append(f"table {table.name} is missing")
+            continue
+        present = {column["name"] for column in inspector.get_columns(table.name)}
+        missing = [column.name for column in table.columns if column.name not in present]
+        if missing:
+            problems.append(f"table {table.name} has no column {', '.join(missing)}")
+    if "attendance_records" in tables and "uq_attendance_session_person_date" not in {index["name"] for index in inspector.get_indexes("attendance_records")}:
+        problems.append("attendance_records has no uq_attendance_session_person_date index (migration 004)")
+    if connection.dialect.name == "postgresql":
+        open_tables = connection.execute(text(
+            "SELECT relname FROM pg_class WHERE relnamespace = 'public'::regnamespace AND relkind = 'r' "
+            "AND relname = ANY(:names) AND NOT relrowsecurity ORDER BY relname"
+        ), {"names": list(ROW_SECURITY_TABLES)}).scalars().all()
+        # The other side of it: this backend must not be held back by row level security itself, or
+        # it would see empty tables. It is not when it owns the table (and the table does not FORCE
+        # it on owners), is a superuser, has BYPASSRLS, or has a policy of its own (vernex_app,
+        # migration 009).
+        blind = connection.execute(text(
+            "SELECT c.relname FROM pg_class c, pg_roles r WHERE r.rolname = current_user "
+            "AND c.relnamespace = 'public'::regnamespace AND c.relkind = 'r' AND c.relname = ANY(:names) "
+            "AND c.relrowsecurity AND NOT (r.rolsuper OR r.rolbypassrls "
+            "OR (pg_has_role(current_user, c.relowner, 'USAGE') AND NOT c.relforcerowsecurity) "
+            "OR EXISTS (SELECT 1 FROM pg_policy p WHERE p.polrelid = c.oid AND p.polpermissive AND p.polcmd IN ('*', 'r') "
+            "AND ('0'::oid = ANY(p.polroles) OR EXISTS (SELECT 1 FROM unnest(p.polroles) AS member(role) "
+            "WHERE pg_has_role(current_user, member.role, 'USAGE'))))) ORDER BY c.relname"
+        ), {"names": list(ROW_SECURITY_TABLES)}).scalars().all()
+        # And it needs the rights to read and write rows (the audit log: read and add) and to take
+        # the next id. A least-privilege account (migration 009) has exactly these.
+        unwritable = connection.execute(text(
+            "SELECT c.relname FROM pg_class c WHERE c.relnamespace = 'public'::regnamespace AND c.relkind = 'r' "
+            "AND c.relname = ANY(:names) AND NOT (has_table_privilege(c.oid, 'SELECT') AND has_table_privilege(c.oid, 'INSERT') "
+            "AND (c.relname = 'audit_logs' OR has_table_privilege(c.oid, 'UPDATE')) "
+            "AND coalesce(has_sequence_privilege(pg_get_serial_sequence('public.' || quote_ident(c.relname), 'id'), 'USAGE'), true)) "
+            "ORDER BY c.relname"
+        ), {"names": list(ROW_SECURITY_TABLES)}).scalars().all()
+        if open_tables:
+            problems.append(f"row level security is off for {', '.join(open_tables)} (migration 008)")
+        if blind:
+            problems.append(f"the database account this backend uses would see no rows of {', '.join(blind)}: "
+                            "it neither owns them, bypasses row level security, nor has a policy (migration 009)")
+        if unwritable:
+            problems.append(f"the database account this backend uses lacks the rights to read and write {', '.join(unwritable)} (migration 009)")
+    return problems
 
 
 def upgrade_existing_tables(bind) -> None:

@@ -1,0 +1,9 @@
+# Secret scanning (gitleaks, task S-01): the default rules, minus two known false positives.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Documentation placeholders"
+# README.md shows how to call the API with a token: the token there is the word ACCESS_TOKEN.
+regexTarget = "line"
+regexes = ['''Bearer ACCESS_TOKEN''']

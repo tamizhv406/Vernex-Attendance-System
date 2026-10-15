@@ -25,7 +25,7 @@ def sync_attendance_record(db: Session, record):
             "status": record.status,
         },
     }
-    log = SheetSyncLog(attendance_record_id=record.id, sheet_name="attendance", sync_status="pending", request_payload=json.dumps(payload), last_attempt_at=now_local())
+    log = SheetSyncLog(attendance_record_id=record.id, sheet_name="attendance", sync_status="pending", request_payload=json.dumps(payload), last_attempt_at=now_local().replace(tzinfo=None))
     try:
         response = requests.post(settings.google_script_url, json=payload, timeout=8)
         record.sync_status = "synced" if response.ok else "failed"

@@ -668,7 +668,9 @@ def test_a_temporary_password_works_for_72_hours_and_not_a_second_longer(backend
     assert [details["reason"] for *_rest, details in audit(backend, "auth.login_failed")] == ["expired_temporary_password", "wrong_password"]
 
 
-def test_a_login_opened_with_a_temporary_password_ends_when_the_password_does(backend, owner, time):
+def test_a_login_opened_with_a_temporary_password_ends_when_the_password_does(backend, owner, time, monkeypatch):
+    # The 72-hour limit of the password itself; the idle limit has tests of its own (test_auth_api.py).
+    monkeypatch.setattr(settings, "auth_idle_minutes", 0)
     password = create(owner).json()["data"]["temporary_password"]
     browser = backend()
     sign_in(browser, "nia@example.com", password)
@@ -914,11 +916,11 @@ def samples(steps):
 def test_face_enrollment_started_completed_and_cancelled_are_recorded(client, school, clock):
     student = school["student"]
 
-    client.post(f"/face/enrollment/start/{student}", params={"mode": "quick"})
+    client.post(f"/face/enrollment/start/{student}", params={"mode": "quick", "consent": "true"})
     client.post(f"/face/enrollment/cancel/{student}")
     client.post(f"/face/enrollment/cancel/{student}")  # nothing in progress: nothing to record
-    client.post(f"/face/enrollment/start/{student}", params={"mode": "quick"})
-    client.post(f"/face/enrollment/start/{student}", params={"mode": "quick"})  # started again, from the front
+    client.post(f"/face/enrollment/start/{student}", params={"mode": "quick", "consent": "true"})
+    client.post(f"/face/enrollment/start/{student}", params={"mode": "quick", "consent": "true"})  # started again, from the front
     with client.db() as db:
         # The last pose saved, as the frame route does it, on a session of a request by this admin.
         db.info["actor"] = Actor(school["admin"], "admin@example.com", "Sample Admin", "admin", False, 1)
@@ -926,10 +928,10 @@ def test_face_enrollment_started_completed_and_cancelled_are_recorded(client, sc
         face_routes.save_enrollment(db, db.get(Person, student), enrollment, samples(["front", "left", "right"]), steps=["front", "left", "right"], mode="quick")
 
     assert [(action, actor, target_type, target, details) for action, actor, target_type, target, details in audit(client)] == [
-        ("face_enrollment.started", school["admin"], "person", student, {"steps": 3}),
+        ("face_enrollment.started", school["admin"], "person", student, {"steps": 3, "consent": True}),
         ("face_enrollment.cancelled", school["admin"], "person", student, {"steps_done": 0}),
-        ("face_enrollment.started", school["admin"], "person", student, {"steps": 3}),
-        ("face_enrollment.started", school["admin"], "person", student, {"steps": 3}),
+        ("face_enrollment.started", school["admin"], "person", student, {"steps": 3, "consent": True}),
+        ("face_enrollment.started", school["admin"], "person", student, {"steps": 3, "consent": True}),
         ("face_enrollment.completed", school["admin"], "person", student, {"steps": 3}),
     ]
     with client.db() as db:
@@ -942,7 +944,7 @@ def test_enrolling_again_after_a_completed_enrollment_and_deleting_the_person(cl
         db.add(FaceEnrollment(person_id=student, enrollment_status="completed", completed_steps=3))
         db.commit()
 
-    client.post(f"/face/enrollment/start/{student}", params={"mode": "quick"})
+    client.post(f"/face/enrollment/start/{student}", params={"mode": "quick", "consent": "true"})
     client.delete(f"/users/{student}")
 
     # The new attempt was started; the person's deletion removes it without calling it a cancellation.
@@ -1026,7 +1028,7 @@ def test_a_bulk_upload_and_its_entry_are_saved_together(client, school, make_csv
 def test_a_face_enrollment_whose_entry_cannot_be_written_is_not_started(client, school, clock, audit_breaks):
     audit_breaks("face_enrollment.started")
 
-    assert client.post(f"/face/enrollment/start/{school['student']}", params={"mode": "quick"}).status_code == 500
+    assert client.post(f"/face/enrollment/start/{school['student']}", params={"mode": "quick", "consent": "true"}).status_code == 500
     with client.db() as db:
         assert db.query(FaceEnrollment).count() == 0
 

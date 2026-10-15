@@ -98,7 +98,7 @@ def test_every_route_that_answers_a_page_at_a_time_has_the_same_upper_limit():
 
 
 def test_the_public_list_is_short_and_names_only_routes_that_exist():
-    assert PUBLIC_ROUTES == {("GET", "/health"), ("POST", "/auth/login"), ("POST", "/auth/refresh"), ("POST", "/auth/logout")}
+    assert PUBLIC_ROUTES == {("GET", "/health"), ("GET", "/health/live"), ("GET", "/health/ready"), ("POST", "/auth/login"), ("POST", "/auth/refresh"), ("POST", "/auth/logout")}
     assert PUBLIC_ROUTES <= set(ROUTES)
 
 
@@ -676,3 +676,93 @@ def test_by_default_no_page_on_another_origin_may_read_the_answers():
     assert allowed_origins("") == []
     template = dotenv_values(Path(__file__).resolve().parents[1] / ".env.example")
     assert template.get("FRONTEND_ORIGIN") == ""
+
+
+def test_live_and_ready_answer_one_word_for_a_monitor(anon_client, monkeypatch):
+    monkeypatch.setattr(face_service, "models_ready", False)
+    live, starting = anon_client.get("/health/live"), anon_client.get("/health/ready")
+    monkeypatch.setattr(face_service, "models_ready", True)
+    ready = anon_client.get("/health/ready")
+
+    assert (live.status_code, live.json()["data"]) == (200, {"status": "ok"})
+    # Not ready until the models are loaded: 503, so a load balancer or a monitor keeps waiting.
+    assert (starting.status_code, starting.json()["data"]) == (503, {"status": "starting"})
+    assert (ready.status_code, ready.json()["data"]) == (200, {"status": "ok"})
+
+
+def test_ready_says_unavailable_when_the_database_is_down(anon_client, monkeypatch):
+    class Unreachable:
+        def execute(self, *args, **kwargs):
+            raise OperationalError("SELECT 1", {}, Exception("connection refused"))
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(database, "SessionLocal", Unreachable)
+    monkeypatch.setattr(face_service, "models_ready", True)
+
+    response = anon_client.get("/health/ready")
+
+    assert (response.status_code, response.json()["data"]) == (503, {"status": "unavailable"})
+
+
+# ---- headers on every answer (task S-07) ------------------------------------------------------------------
+
+@pytest.mark.parametrize("method, path, logged_in", [("GET", "/health", False), ("GET", "/courses", True), ("GET", "/courses", False), ("GET", "/no-such-page", False), ("POST", "/auth/login", False)])
+def test_every_answer_carries_the_security_headers(anon_client, client, method, path, logged_in):
+    response = (client if logged_in else anon_client).request(method, path, json={} if method == "POST" else None)
+
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["x-frame-options"] == "DENY"
+    assert response.headers["content-security-policy"] == "default-src 'none'; frame-ancestors 'none'"
+    assert response.headers["referrer-policy"] == "no-referrer"
+    assert response.headers["cache-control"] == "no-store"
+
+
+def test_a_file_download_keeps_its_own_headers_and_gets_the_rest(client):
+    response = client.get("/courses/upload/template", params={"format": "csv"})
+
+    assert response.status_code == 200 and response.headers["content-disposition"].startswith("attachment")
+    assert response.headers["x-content-type-options"] == "nosniff"
+
+
+# ---- how often one account may send frames and uploads (task S-04) ----------------------------------------
+
+def test_an_account_that_floods_the_face_routes_is_told_to_wait(client, monkeypatch):
+    from app.utils import rate_limit
+
+    monkeypatch.setattr(rate_limit.frames, "limit", 3)
+    answers = [client.post("/face/recognize", json={"image_base64": ""}) for _ in range(4)]
+
+    assert [answer.status_code for answer in answers] == [200, 200, 200, 429]
+    assert int(answers[-1].headers["retry-after"]) >= 1 and answers[-1].json()["detail"].startswith("Too many requests.")
+
+
+def test_the_frame_limit_is_per_account(client, signed_in, monkeypatch):
+    from app.utils import rate_limit
+
+    monkeypatch.setattr(rate_limit.frames, "limit", 2)
+    other = signed_in("other@example.com")
+    for _ in range(2):
+        client.post("/face/recognize", json={"image_base64": ""})
+
+    assert client.post("/face/recognize", json={"image_base64": ""}).status_code == 429
+    assert other.post("/face/recognize", json={"image_base64": ""}).status_code == 200
+
+
+def test_uploads_are_limited_too(client, monkeypatch):
+    from app.utils import rate_limit
+
+    monkeypatch.setattr(rate_limit.uploads, "limit", 1)
+    first = client.post("/courses/upload", files={"file": ("c.csv", b"course_code,course_name\r\nA1,Alpha\r\n", "text/csv")})
+    second = client.post("/courses/upload", files={"file": ("c.csv", b"course_code,course_name\r\nA2,Beta\r\n", "text/csv")})
+
+    assert first.status_code != 429 and second.status_code == 429
+
+
+def test_the_default_limits_leave_room_for_several_scanners():
+    from app.utils import rate_limit
+
+    # 20 frames a second over 30 seconds per account; a scanner sends 5 to 8.
+    assert (rate_limit.frames.limit, rate_limit.frames.seconds) == (600, 30)
+    assert (rate_limit.uploads.limit, rate_limit.uploads.seconds) == (20, 60)

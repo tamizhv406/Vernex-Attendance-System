@@ -35,7 +35,7 @@ function MyIssueList({ page, setListPage, setPage, onReport, reported }) {
       {state === "error" || state === "unauthorized"
         ? <ErrorState title="Could not load your reports" message={issues.error.message} onRetry={issues.reload} />
         : <DataTable loading={state === "loading"} caption="Problems you reported" columns={["Issue", "Status", "Severity", "Category", "Reported", "Last change"]}
-          rows={items.map(issue => [
+          rowKeys={items.map(issue => issue.id)} rows={items.map(issue => [
             <IssueLink issue={issue} href={pathFor("myReports", issue.id)} onOpen={open} />,
             <IssueStatus status={issue.status} />,
             <IssueSeverity severity={issue.severity} />,

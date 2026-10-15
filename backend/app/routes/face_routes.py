@@ -3,7 +3,7 @@ import time
 
 import cv2
 import numpy as np
-from datetime import datetime
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -21,8 +21,8 @@ from app.services.attendance_service import find_today_record, mark_attendance
 from app.services.face_service import ENROLLMENT_STEPS, build_gallery, detect_faces, embed_faces, identify, judge_liveness, locate_faces, model_label, run_models, unit_rows, usable_vector
 from app.services.quality_service import MESSAGES, check_pose, check_quality, scan_problem
 from app.services.tracking_service import assign_tracks, challenge_entry, observe, progress, track_score, verify
-from app.utils.image_utils import decode_base64_image, decode_image_bytes
-from app.utils import timing
+from app.utils.image_utils import ImageTooLarge, decode_base64_image, decode_image_bytes
+from app.utils import rate_limit, timing
 from app.utils.scan_log import log_decision
 from app.utils.time_utils import today_local
 
@@ -71,43 +71,77 @@ async def use_models(function, *args):
 
 
 async def read_face_payload(request: Request):
+    # What a frame request carries, checked: a field that cannot be what it should be is refused with
+    # 400 and says which one, instead of failing on the server. An image that is not an image is
+    # None here; the routes answer that the image is invalid.
     content_type = request.headers.get("content-type", "")
     if "multipart/form-data" in content_type:
         with timing.stage("read"):
-            form = await request.form()
+            try:
+                form = await request.form()
+            except Exception:
+                raise HTTPException(400, "The frame could not be read. Send it as multipart form data.")
             file = form.get("image") or form.get("file")
-            raw = await file.read() if file is not None else None
+            raw = await file.read() if file is not None and hasattr(file, "read") else None
         with timing.stage("decode"):
-            image = decode_image_bytes(raw) if raw is not None else decode_base64_image(str(form.get("image_base64") or ""))
+            image = decode_frame(raw) if raw is not None else decode_frame(text_field(form.get("image_base64")), base64=True)
         # What the browser measured for this frame and for the answer to its previous one, so the
         # time spent outside this server (camera, network) can be told apart from the time in it.
         timing.note(upload_bytes=len(raw) if raw is not None else None, client_capture_ms=client_ms(form.get("client_capture_ms")), client_roundtrip_ms=client_ms(form.get("client_roundtrip_ms")))
-        return {
-            "person_id": int(form.get("person_id")) if form.get("person_id") else None,
-            "current_step": str(form.get("current_step") or "front"),
-            "has_specs": str(form.get("has_specs", "false")).lower() == "true",
-            "session_id": int(form.get("session_id")) if form.get("session_id") else None,
-            "course_id": int(form.get("course_id")) if form.get("course_id") else None,
-            "batch_id": int(form.get("batch_id")) if form.get("batch_id") else None,
-            "device_name": form.get("device_name"),
-            "scanner_id": form.get("scanner_id"),
-            "image": image,
-        }
-    with timing.stage("read"):
-        body = await request.json()
-    with timing.stage("decode"):
-        image = decode_base64_image(body.get("image_base64") or "")
+        fields = form
+    else:
+        with timing.stage("read"):
+            try:
+                fields = await request.json()
+            except Exception:
+                raise HTTPException(400, "The frame could not be read. Send JSON or multipart form data.")
+        if not isinstance(fields, dict):
+            raise HTTPException(400, "The frame could not be read. Send a JSON object.")
+        with timing.stage("decode"):
+            image = decode_frame(text_field(fields.get("image_base64")), base64=True)
     return {
-        "person_id": body.get("person_id"),
-        "current_step": body.get("current_step", "front"),
-        "has_specs": bool(body.get("has_specs", False)),
-        "session_id": body.get("session_id"),
-        "course_id": body.get("course_id"),
-        "batch_id": body.get("batch_id"),
-        "device_name": body.get("device_name"),
-        "scanner_id": body.get("scanner_id"),
+        "person_id": whole_number(fields, "person_id"),
+        "current_step": text_field(fields.get("current_step")) or "front",
+        "has_specs": text_field(fields.get("has_specs")).lower() == "true",
+        "session_id": whole_number(fields, "session_id"),
+        "course_id": whole_number(fields, "course_id"),
+        "batch_id": whole_number(fields, "batch_id"),
+        "device_name": text_field(fields.get("device_name"))[:120] or None,
+        "scanner_id": text_field(fields.get("scanner_id"))[:80] or None,
         "image": image,
     }
+
+
+def decode_frame(data, base64=False):
+    try:
+        if base64:
+            return decode_base64_image(data, settings.face_max_image_pixels)
+        return decode_image_bytes(data, settings.face_max_image_pixels)
+    except ImageTooLarge as exc:
+        raise HTTPException(413, str(exc))
+
+
+def text_field(value):
+    # A form or JSON value as text: JSON may send true or a number where the form sends "true".
+    if value is None or hasattr(value, "read"):
+        return ""
+    return str(value).lower() if isinstance(value, bool) else str(value)
+
+
+def whole_number(fields, name):
+    # An id from the form or the JSON body. Missing or empty is None; anything else must be a whole number.
+    value = fields.get(name)
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool) or isinstance(value, float) and not value.is_integer():
+        raise HTTPException(400, f"{name} must be a whole number.")
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        raise HTTPException(400, f"{name} must be a whole number.")
+    if not 0 < number <= 2_147_483_647:
+        raise HTTPException(400, f"{name} must be a whole number.")
+    return number
 
 
 def client_ms(value):
@@ -151,7 +185,19 @@ def enrollment_steps(mode):
     return mode, [step for step in REQUIRED_STEPS if step in wanted]
 
 
-@router.post("/enrollment/start/{person_id}")
+def consent_given(consent: bool = False, db: Session = Depends(get_db)):
+    # Face vectors are biometric data. Before anything is captured, whoever enrolls confirms that the
+    # student (or, for a minor, a parent or guardian) agreed; the audit entry of the enrollment says
+    # so (audit_service). A route dependency, so the confirmation is required of every request.
+    if not consent:
+        raise HTTPException(400, CONSENT_NEEDED)
+    db.info["enrollment_consent"] = True
+
+
+CONSENT_NEEDED = "Confirm that the student (or, for a minor, a parent or guardian) agreed to face enrollment."
+
+
+@router.post("/enrollment/start/{person_id}", dependencies=[Depends(consent_given)])
 def start_enrollment(person_id: int, db: Session = Depends(get_db), mode: str | None = None):
     mode, steps = enrollment_steps(mode if isinstance(mode, str) else None)
     person = db.get(Person, person_id)
@@ -170,7 +216,9 @@ def start_enrollment(person_id: int, db: Session = Depends(get_db), mode: str | 
         enrollment.completed_steps = 0
         enrollment.quality_score = None
         enrollment.has_specs_reference = False
-        enrollment.started_at = datetime.utcnow()
+        # Always later than the previous start, even within one tick of the clock (about 15 ms on
+        # Windows): the audit log sees a restart by this change (audit_service).
+        enrollment.started_at = max(datetime.utcnow(), (enrollment.started_at or datetime.min) + timedelta(microseconds=1))
         enrollment.completed_at = None
     else:
         # A finished enrollment keeps its own record. Enrolling again is a new attempt beside it,
@@ -228,7 +276,7 @@ def moved(previous, box):
     return shift > 0.15 * pw or abs(w - pw) > 0.15 * pw
 
 
-@router.post("/enrollment/frame")
+@router.post("/enrollment/frame", dependencies=[Depends(rate_limit.frames)])
 async def enrollment_frame(request: Request, db: Session = Depends(get_db)):
     timer = timing.start("enroll")
     outcome = "error"
@@ -601,6 +649,11 @@ def mark_for_session(db, session, person_id, confidence, device_name):
     if not row or row.status != "active":
         session_cache.pop(session.id, None)
         return {"result": "not_marked", "attendance_status": None, "newly_marked": False, "message": "This session has been stopped. Attendance was not marked."}
+    if row.session_date and row.session_date != today_local():
+        # A session left running from an earlier day. Its records would carry today's date under
+        # that day's session, so nothing is written into it: today needs a session of its own.
+        return {"result": "not_marked", "attendance_status": None, "newly_marked": False,
+                "message": f"This session is for {row.session_date.isoformat()}. Stop it and start a new session for today. Attendance was not marked."}
     record, message = mark_attendance(db, AttendanceMark(
         session_id=session.id,
         person_id=person_id,
@@ -617,7 +670,7 @@ def mark_for_session(db, session, person_id, confidence, device_name):
     return {"result": "verified", "attendance_status": record.status, "newly_marked": True, "record": attendance_record_data(record)}
 
 
-@router.post("/recognize")
+@router.post("/recognize", dependencies=[Depends(rate_limit.frames)])
 async def recognize(request: Request, db: Session = Depends(get_db)):
     global scans_in_flight
     timer = timing.start("scan")

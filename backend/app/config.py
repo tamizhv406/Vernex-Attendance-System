@@ -6,8 +6,19 @@ ENV_PATH = Path(__file__).resolve().parents[1] / ".env"
 load_dotenv(ENV_PATH)
 
 
+def optional_flag(name):
+    # "true" or "false" from the environment, or None when it is not set (the code then decides).
+    value = os.getenv(name, "").strip().lower()
+    return None if value == "" else value == "true"
+
+
 class Settings:
     database_url: str = os.getenv("DATABASE_URL", "sqlite:///./vernex_attendance.db")
+    # Whether the backend may create and change tables when it starts (app/schema.py). Unset: yes for
+    # the local SQLite file, no for PostgreSQL, where the schema comes from backend/migrations and the
+    # backend only checks it and refuses to start if something is missing. "true" brings back the
+    # changes at every start on PostgreSQL too; they need an account that owns the tables.
+    database_auto_upgrade: bool | None = optional_flag("DATABASE_AUTO_UPGRADE")
     # Pages on ANOTHER origin that may read the backend's answers (see allowed_origins). Empty by
     # default: the console reaches the backend through the /api proxy on its own origin and needs none.
     frontend_origin: str = os.getenv("FRONTEND_ORIGIN", "")
@@ -70,6 +81,10 @@ class Settings:
     face_enroll_duplicate_score: float = float(os.getenv("FACE_ENROLL_DUPLICATE_SCORE", "0.85"))
     # Length of one stored vector for face_model. Anything else is never saved.
     face_embedding_size: int = int(os.getenv("FACE_EMBEDDING_SIZE", "512"))
+    # Largest camera frame the face routes read, and the most pixels it may unpack into. The console
+    # sends 960-pixel-wide JPEGs: 3.8 to 73 kB in the 10,195 frames of logs/timing.log (15 October 2026).
+    face_max_upload_bytes: int = int(os.getenv("FACE_MAX_UPLOAD_BYTES", "2000000"))
+    face_max_image_pixels: int = int(os.getenv("FACE_MAX_IMAGE_PIXELS", str(4096 * 4096)))
     # Write scanner decisions (who, score, runner-up, why refused) to logs/recognition.log.
     # Numbers and ids only: no camera frames and no face vectors.
     face_scan_log: bool = os.getenv("FACE_SCAN_LOG", "true").lower() == "true"
@@ -95,6 +110,10 @@ class Settings:
     # that gets the next one without asking for the password again.
     auth_access_minutes: int = int(os.getenv("AUTH_ACCESS_MINUTES", "15"))
     auth_refresh_days: int = int(os.getenv("AUTH_REFRESH_DAYS", "7"))
+    # A login that has not been renewed for this long cannot be renewed any more (task S-16): a
+    # browser left closed, or a refresh cookie used long after. The console renews every 14 minutes
+    # while it is open and logs itself out after 30 minutes without a click or a key. 0 switches it off.
+    auth_idle_minutes: int = int(os.getenv("AUTH_IDLE_MINUTES", "30"))
     # The path the BROWSER uses for the auth routes. The frontend reaches the backend as /api/...
     # (Vite, or the reverse proxy in production, takes /api off), so the cookie must say /api/auth
     # or the browser never sends it back. Set it to /auth only if browsers call the backend directly.

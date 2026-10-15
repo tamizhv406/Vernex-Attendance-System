@@ -13,11 +13,21 @@ mark_lock = threading.Lock()
 
 
 def find_today_record(db: Session, person_id, session_id):
+    return find_record(db, person_id, session_id, today_local())
+
+
+def find_record(db: Session, person_id, session_id, day):
     return db.query(AttendanceRecord).filter(
         AttendanceRecord.person_id == person_id,
         AttendanceRecord.session_id == session_id,
-        AttendanceRecord.attendance_date == today_local(),
+        AttendanceRecord.attendance_date == day,
     ).first()
+
+
+def session_day(session):
+    # The day a record in this session belongs to: the session's own date. A record written into
+    # yesterday's session (a correction by hand) is yesterday's attendance, not today's.
+    return session.session_date if session is not None and session.session_date else today_local()
 
 
 def mark_attendance(db: Session, payload, by_hand: bool = False):
@@ -60,7 +70,8 @@ def write_attendance(db: Session, payload, by_hand: bool = False):
             return None, "Person does not belong to this course"
         if expected_batch_id and person.batch_id != expected_batch_id:
             return None, "Person does not belong to this batch"
-    existing = find_today_record(db, person.id, payload.session_id)
+    day = session_day(session)
+    existing = find_record(db, person.id, payload.session_id, day)
     if existing:
         existing.duplicate_flag = True
         db.commit()
@@ -72,16 +83,20 @@ def write_attendance(db: Session, payload, by_hand: bool = False):
     actor = db.info.get("actor")
     now = now_local()
     # Marked absent by hand is absent whatever the session (the route insists on it), and is saved
-    # that way at once, so the record and its audit row say the same thing.
-    if payload.recognition_method == "auto_absent":
+    # that way at once, so the record and its audit row say the same thing. A status chosen by the
+    # teacher is taken as it is. Otherwise the clock decides late or absent, but only on the
+    # session's own day: marked by hand afterwards, the time it is marked says nothing.
+    if getattr(payload, "status", None):
+        status = payload.status
+    elif payload.recognition_method == "auto_absent":
         status = "absent"
     elif session and session.session_type == "member_visit":
         status = "visited"
     else:
         status = "present"
-        if session and session.grace_time and now.time() > session.grace_time:
+        if day == now.date() and session and session.grace_time and now.time() > session.grace_time:
             status = "late"
-        if session and session.end_time and now.time() > session.end_time:
+        if day == now.date() and session and session.end_time and now.time() > session.end_time:
             status = "absent"
 
     record = AttendanceRecord(
@@ -95,8 +110,11 @@ def write_attendance(db: Session, payload, by_hand: bool = False):
         category_program=person.category_program,
         batch_name=person.batch_name,
         level_class=person.level_class,
-        attendance_date=today_local(),
-        marked_time=now,
+        attendance_date=day,
+        # The school's clock, without a time zone, which is what the column holds. Handed a time WITH
+        # a zone, PostgreSQL converts it to its own zone first (UTC on Supabase: 5.5 hours off for
+        # Asia/Kolkata) while SQLite keeps the clock time, so the same mark read differently.
+        marked_time=now.replace(tzinfo=None),
         status=status,
         confidence_score=payload.confidence_score,
         recognition_method=payload.recognition_method,
@@ -113,7 +131,7 @@ def write_attendance(db: Session, payload, by_hand: bool = False):
     except IntegrityError:
         # Another process wrote this person's record first; the database's unique index refused ours.
         db.rollback()
-        existing = find_today_record(db, person.id, payload.session_id)
+        existing = find_record(db, person.id, payload.session_id, day)
         if not existing:
             raise
         return existing, "Already marked"

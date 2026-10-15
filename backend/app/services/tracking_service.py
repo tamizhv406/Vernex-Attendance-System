@@ -154,10 +154,19 @@ def progress(track):
 # looking live. It is a second, separate question from "who is this": passing it marks nobody
 # whose identity has not been confirmed, and it is asked of every face on its own.
 
-# Eye shift inside the face box (see face_service.head_turn). Under the first value the head counts
-# as straight; a turn has to reach the second. The limits come from measurements, see the README.
+# Eye shift inside the face box (see face_service.head_turn). A turn is measured from the face's own
+# starting pose, not from zero: a student who reads the screen beside the camera faces the camera at
+# an angle all the time, and an absolute "straight" was never reached by the one real student tested
+# (turn 0.17 to 0.24 for the whole attempt, 15 October 2026). The starting pose is wherever the face
+# holds still (within CHALLENGE_STEADY for CHALLENGE_STEADY_SECONDS) after the instruction appears,
+# provided it roughly faces the camera (CHALLENGE_START_MAX); the answer is a further turn of at least
+# CHALLENGE_TURN from there. A face turned the wrong way only fails once it points past
+# CHALLENGE_STRAIGHT to the wrong side; coming back towards the camera is simply a new starting pose.
 CHALLENGE_STRAIGHT = 0.04
 CHALLENGE_TURN = 0.08
+CHALLENGE_START_MAX = 0.25
+CHALLENGE_STEADY = 0.03
+CHALLENGE_STEADY_SECONDS = 0.4
 # A real head that turns keeps the shape of its face box. A flat photo that is tilted to shift the
 # eyes gets a visibly narrower box. A "turn" whose box changed by more than this is not a head turning.
 CHALLENGE_BOX_CHANGE = 0.10
@@ -201,7 +210,12 @@ def verify(key, track, person_id, score, now, turn=None, box=None, challenge=Tru
     if entry["locked_until"] > now:
         clear(track)
         return "locked"
-    turned = turn is not None and abs(turn) >= MIN_HEAD_TURN
+    # A look counts towards the identity unless it is the turn that answers the challenge: turned
+    # away from this face's starting pose, not merely turned. A student who faces the camera at an
+    # angle all the time is still identified.
+    state = track.get("challenge")
+    start = state["base"] if state and state["person_id"] == person_id and state.get("base") is not None else None
+    turned = turn is not None and start is not None and abs(turn - start) >= MIN_HEAD_TURN
     identity = observe(key, track, person_id, score, True, now, count=not turned)
     if track["person_id"] != person_id:
         # Paused after a photo or a wrong answer: nothing is collected for now.
@@ -215,7 +229,7 @@ def verify(key, track, person_id, score, now, turn=None, box=None, challenge=Tru
 def respond(key, track, entry, person_id, turn, box, now):
     state = track.get("challenge")
     if state is None or state["person_id"] != person_id or now - state["started"] > (CHALLENGE_PASS_SECONDS if state["passed_at"] else CHALLENGE_SECONDS):
-        state = track["challenge"] = {"person_id": person_id, "stage": "straight", "started": now, "shape": None, "passed_at": None}
+        state = track["challenge"] = {"person_id": person_id, "stage": "straight", "started": now, "base": None, "shape": None, "steady": None, "passed_at": None}
     if state["passed_at"] is not None:
         return "passed"
     if turn is None or box is None:
@@ -223,15 +237,29 @@ def respond(key, track, entry, person_id, turn, box, now):
         return state["stage"]
     shape = box[2] / max(box[3], 1)
     if state["stage"] == "straight":
-        # The answer must begin from a straight face seen after the instruction was given, so a
-        # head that merely happens to be turned already is not an answer.
-        if abs(turn) < CHALLENGE_STRAIGHT:
-            state.update(stage="turn", shape=shape)
+        # The answer must begin from a pose held still after the instruction was given, so a head
+        # that is already turned, or still moving, is not an answer: it only becomes the start.
+        steady = state["steady"]
+        if abs(turn) > CHALLENGE_START_MAX:
+            state["steady"] = None
+        elif steady is None or abs(turn - steady["turn"]) > CHALLENGE_STEADY:
+            state["steady"] = {"turn": turn, "shape": shape, "since": now}
+        elif now - steady["since"] >= CHALLENGE_STEADY_SECONDS:
+            # The time to answer runs from the moment the turn is asked for.
+            state.update(stage="turn", base=steady["turn"], shape=steady["shape"], started=now)
         return state["stage"]
-    wanted = turn if entry["direction"] == "left" else -turn
+    # How far the face has turned from its starting pose in the direction asked for (negative: the
+    # other way), and where it points now, measured the same way.
+    sign = 1 if entry["direction"] == "left" else -1
+    wanted, pointing = sign * (turn - state["base"]), sign * turn
     if wanted >= CHALLENGE_TURN and abs(shape / state["shape"] - 1) <= CHALLENGE_BOX_CHANGE:
         state.update(passed_at=now, started=now)
         return "passed"
+    if wanted <= -CHALLENGE_TURN and pointing > -CHALLENGE_STRAIGHT:
+        # Back towards the camera from a starting pose that was turned the way asked for: not the
+        # wrong way yet. This becomes the new starting pose once it is held still.
+        state.update(stage="straight", base=None, shape=None, steady={"turn": turn, "shape": shape, "since": now}, started=now)
+        return "straight"
     if abs(wanted) >= CHALLENGE_TURN:
         # Turned the other way, or "turned" the way a tilted flat picture does.
         entry["failures"] += 1

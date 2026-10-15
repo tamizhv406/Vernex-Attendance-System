@@ -1,0 +1,3 @@
+# Known false positive (task S-01): a made-up temporary password in the reveal-once reducer test,
+# committed before the line carried its gitleaks:allow note. One commit, one file, one line.
+5113598c0828887e07c8492e3681747aa07d1149:frontend/src/lib/portal.test.js:generic-api-key:170

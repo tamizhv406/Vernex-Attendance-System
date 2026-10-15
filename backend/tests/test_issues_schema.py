@@ -255,8 +255,28 @@ def test_the_migration_can_be_run_twice_and_touches_nothing_stored():
     assert not any("POLICY" in statement.upper() for statement in listed)
 
 
-def test_the_full_schema_says_it_follows_the_migrations_up_to_007():
-    assert "001 -> 007" in (MIGRATIONS / "full_schema.sql").read_text(encoding="utf-8")
+def test_the_full_schema_says_it_follows_the_migrations_up_to_009():
+    assert "001 -> 009" in (MIGRATIONS / "full_schema.sql").read_text(encoding="utf-8")
+
+
+def test_every_table_gets_row_level_security_from_the_migrations_and_the_backend():
+    # Supabase hands its public (anon) key access to every table of the public schema that has row
+    # level security off: face vectors and students' phone numbers included (tests/test_postgres.py).
+    from app.database import Base
+    from app.schema import ROW_SECURITY_TABLES
+
+    tables = sorted(table.name for table in Base.metadata.sorted_tables)
+    full = statements(re.sub(r"--[^\n]*", "", (MIGRATIONS / "full_schema.sql").read_text(encoding="utf-8")))
+    repair = [" ".join(statement.split()) for statement in POSTGRES_REPAIR_STATEMENTS]
+    later = re.sub(r"--[^\n]*", "", (MIGRATIONS / "008_row_level_security.sql").read_text(encoding="utf-8"))
+
+    assert sorted(ROW_SECURITY_TABLES) == tables
+    for name in tables:
+        assert f"ALTER TABLE {name} ENABLE ROW LEVEL SECURITY" in full, name
+        assert f"ALTER TABLE {name} ENABLE ROW LEVEL SECURITY" in repair, name
+        assert f"'{name}'" in later, name
+    # It only switches row level security on: no policy, nothing stored is touched.
+    assert "POLICY" not in later.upper() and not re.search(r"\b(DROP|TRUNCATE|DELETE|UPDATE|INSERT)\b", later.upper())
 
 
 def test_the_postgresql_check_is_also_one_sqlite_runs(db_session, reporter):

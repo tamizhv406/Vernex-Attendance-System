@@ -13,6 +13,10 @@ export const MIN_PASSWORD_LENGTH = 10;
 export const MAX_PASSWORD_LENGTH = 128;
 export const LOGOUT_UNREACHABLE = "Logged out on this device. The server could not be reached, so its side of the session ends on its own later.";
 export const LOGOUT_UNCONFIRMED = "Logged out on this device. The server did not confirm it, so its side of the session ends on its own later.";
+// After this long without a click, a key or a touch the console logs out (task S-16). A running
+// scanner keeps it awake: a camera left on a desk during a class is not an abandoned console.
+export const IDLE_MINUTES = 30;
+export const IDLE_ENDED = `You were logged out after ${IDLE_MINUTES} minutes without activity. Log in again.`;
 // Sent with the requests that work on the refresh cookie alone. The backend refuses those without
 // it: another page can make the browser send the cookie, but it cannot add a header of its own.
 export const CLIENT_HEADERS = { "X-Requested-With": "vernex" };
@@ -27,8 +31,13 @@ function refusal(answer, payload, fallback) {
 // send(path, { method, body, token }) does one HTTP exchange and resolves to { status, json() };
 // it rejects only when the server cannot be reached. remember keeps one yes/no between page loads:
 // whether this browser was signed in, so that a visitor who never was is not asked about.
-export function createSession({ send, remember = { get: () => true, set: () => {} }, setTimer = setTimeout, clearTimer = clearTimeout }) {
+export function createSession({ send, remember = { get: () => true, set: () => {} }, setTimer = setTimeout, clearTimer = clearTimeout, now = () => Date.now(), idleLimit = IDLE_MINUTES * 60000 }) {
   let token = null;
+  // The last time the person did something here, when the token is due for renewal, and what is
+  // keeping the console awake (the scanner while a session runs).
+  let lastActive = now();
+  let renewDue = 0;
+  const awake = new Set();
   let account = null;
   let state = "checking";
   let notice = "";
@@ -54,12 +63,46 @@ export function createSession({ send, remember = { get: () => true, set: () => {
     state = "in";
     notice = "";
     remember.set(true);
-    clearTimer(timer);
     // Renewed a minute before it runs out, so that a scanner sending frames never meets a refusal.
     // (A token shorter than five minutes: when four fifths of it are gone. Never sooner than 5 seconds.)
     const seconds = Number(data.expires_in) || 900;
-    timer = setTimer(() => { renew().catch(() => {}); }, Math.max(5, seconds - 60, seconds * 0.8) * 1000);
+    const wait = Math.max(5, seconds - 60, seconds * 0.8) * 1000;
+    renewDue = now() + wait;
+    arm(wait);
     publish();
+  }
+
+  function idleFor() {
+    return awake.size ? 0 : now() - lastActive;
+  }
+
+  // One timer: it goes off for the renewal, or earlier if the console would by then have been idle
+  // for too long. Activity since it was set only means it is set again.
+  function arm(wait) {
+    clearTimer(timer);
+    const idleLeft = idleLimit > 0 && !awake.size ? idleLimit - idleFor() : Infinity;
+    const forRenewal = wait <= idleLeft;
+    timer = setTimer(() => wake(forRenewal), forRenewal ? wait : Math.max(1000, idleLeft));
+  }
+
+  function wake(forRenewal) {
+    if (state !== "in") return;
+    if (idleLimit > 0 && idleFor() >= idleLimit) {
+      endIdle();
+      return;
+    }
+    if (forRenewal) {
+      renew().catch(() => {});
+      return;
+    }
+    // Set for the idle limit, but there was activity since: wait for whichever comes next.
+    arm(Math.max(0, renewDue - now()));
+  }
+
+  async function endIdle() {
+    drop(IDLE_ENDED);
+    // The server's side of the login is ended too; if it cannot be reached it ends on its own later.
+    try { await send("/auth/logout", { method: "POST", headers: CLIENT_HEADERS }); } catch { /* ended on this device anyway */ }
   }
 
   function drop(why = "", keepHint = false) {
@@ -126,10 +169,22 @@ export function createSession({ send, remember = { get: () => true, set: () => {
       return snapshot();
     },
 
+    // Called on every click, key and touch in the console.
+    touch() {
+      lastActive = now();
+    },
+
+    // keepAwake("scanner", true) while a scanning session runs; false when it stops.
+    keepAwake(reason, on) {
+      if (on) awake.add(reason);
+      else if (awake.delete(reason)) lastActive = now();
+    },
+
     async login(email, password) {
       const answer = await send("/auth/login", { method: "POST", body: { email, password }, headers: CLIENT_HEADERS });
       const payload = await answer.json();
       if (answer.status !== 200 || !payload?.data?.access_token) throw refusal(answer, payload, "Unable to log in.");
+      lastActive = now();
       accept(payload.data);
       return snapshot();
     },

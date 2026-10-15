@@ -1,6 +1,7 @@
 // The camera: opening it, taking frames for the backend, and drawing what the backend said about them.
 import React, { useEffect, useRef, useState } from "react";
 import { CameraOff, Loader2, RefreshCw, SwitchCamera } from "lucide-react";
+import { facesThePerson } from "./lib/camera";
 import { titleCase } from "./lib/format";
 
 export function useCamera(active, initialFacing = "environment") {
@@ -9,8 +10,12 @@ export function useCamera(active, initialFacing = "environment") {
   const [error, setError] = useState("");
   const [ready, setReady] = useState(false);
   const [attempt, setAttempt] = useState(0);
+  // Which way the camera that opened really faces, when the browser says ("user", "environment");
+  // the facingMode asked for is only a wish, and a desktop webcam ignores it.
+  const [opened, setOpened] = useState("");
   useEffect(() => {
     setReady(false);
+    setOpened("");
     if (!active) return;
     setError("");
     if (!navigator.mediaDevices?.getUserMedia) {
@@ -23,6 +28,7 @@ export function useCamera(active, initialFacing = "environment") {
       .then(result => {
         if (cancelled) { result.getTracks().forEach(track => track.stop()); return; }
         stream = result;
+        setOpened(result.getVideoTracks()[0]?.getSettings?.().facingMode || "");
         // A camera that is unplugged or taken by another app ends its track; say so instead of freezing.
         result.getVideoTracks().forEach(track => { track.onended = () => { if (!cancelled) { setReady(false); setError("The camera stopped. Check that it is connected and not in use by another app, then try again."); } }; });
         if (videoRef.current) videoRef.current.srcObject = result;
@@ -47,7 +53,7 @@ export function useCamera(active, initialFacing = "environment") {
   });
   const flip = () => setFacing(current => current === "environment" ? "user" : "environment");
   const retry = () => setAttempt(current => current + 1);
-  return { videoRef, error, capture, flip, retry, facing, ready, setReady };
+  return { videoRef, error, capture, flip, retry, facing, ready, setReady, facesPerson: facesThePerson(opened, facing) };
 }
 
 // Why the scanner could not judge a face at all.
@@ -66,7 +72,7 @@ export function faceVerdict(face) {
     // The backend asks each face for its own movement, in a direction it picked at random.
     case "challenge": return face.challenge?.action === "turn"
       ? { tone: "info", name, label: `Turn head to YOUR ${String(face.challenge.direction || "").toUpperCase()}`, identity: "Matched", liveness: "Passed", ask: true }
-      : { tone: "info", name, label: "Look straight", identity: "Matched", liveness: "Passed", ask: true };
+      : { tone: "info", name, label: "Hold still, facing the camera", identity: "Matched", liveness: "Passed", ask: true };
     case "challenge_failed": return { tone: "danger", name, label: "Wrong movement, wait", identity: "Matched", liveness: "Passed" };
     case "locked": return { tone: "danger", name, label: "Locked, mark by hand", identity: "Matched", liveness: "–" };
     case "liveness_uncertain": return { tone: "neutral", name: "Cannot verify", label: "Cannot confirm a real face", identity: "–", liveness: "Uncertain" };
@@ -86,13 +92,15 @@ const BOX = {
   neutral: { border: "border-slate-300", chip: "bg-slate-600" }
 };
 
-// guide: draw the oval the face should sit in. mirror: show the front camera like a mirror
-// (the preview only; uploaded frames are never flipped).
+// guide: draw the oval the face should sit in. mirror: show a camera that faces the person like a
+// mirror, boxes included (the preview only; uploaded frames are never flipped). Enrollment and the
+// scanner both do, so "turn to your left" looks the same on both screens.
 export function CameraView({ camera, faces = [], frame, guide = false, mirror = false, children }) {
   const percent = (value, total) => `${(value / total) * 100}%`;
+  const mirrored = mirror && camera.facesPerson;
   return <div className="relative grid min-h-[15rem] place-items-center overflow-hidden rounded-3xl bg-ink">
     <div className="relative inline-block max-w-full">
-      <video ref={camera.videoRef} className={`block max-h-[68vh] min-h-48 max-w-full transition-opacity duration-300 ${camera.ready ? "opacity-100" : "opacity-0"}`} style={mirror && camera.facing === "user" ? { transform: "scaleX(-1)" } : undefined} onLoadedData={() => camera.setReady(true)} autoPlay playsInline muted />
+      <video ref={camera.videoRef} className={`block max-h-[68vh] min-h-48 max-w-full transition-opacity duration-300 ${camera.ready ? "opacity-100" : "opacity-0"}`} style={mirrored ? { transform: "scaleX(-1)" } : undefined} onLoadedData={() => camera.setReady(true)} autoPlay playsInline muted />
       {guide && camera.ready && <div className="pointer-events-none absolute inset-0 grid place-items-center overflow-hidden" aria-hidden="true">
         <div className="h-[78%] w-[36%] rounded-[50%] border-2 border-dashed border-white/80 shadow-[0_0_0_100vmax_rgba(14,17,22,.45)]" />
       </div>}
@@ -101,7 +109,7 @@ export function CameraView({ camera, faces = [], frame, guide = false, mirror = 
         // with the same face while people move and the order of the list changes.
         const verdict = faceVerdict(face);
         const style = BOX[verdict.tone];
-        return <div key={face.track_id ?? index} className={`absolute rounded-xl border-2 transition-all duration-150 ease-linear ${style.border}`} style={{ left: percent(face.box.x, frame.width), top: percent(face.box.y, frame.height), width: percent(face.box.w, frame.width), height: percent(face.box.h, frame.height) }}>
+        return <div key={face.track_id ?? index} className={`absolute rounded-xl border-2 transition-all duration-150 ease-linear ${style.border}`} style={{ left: percent(mirrored ? frame.width - face.box.x - face.box.w : face.box.x, frame.width), top: percent(face.box.y, frame.height), width: percent(face.box.w, frame.width), height: percent(face.box.h, frame.height) }}>
           <span className={`absolute left-0 top-full mt-1 whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-semibold text-white shadow ${style.chip}`}>{verdict.name ? `${verdict.name}: ` : ""}{verdict.label}</span>
         </div>;
       })}

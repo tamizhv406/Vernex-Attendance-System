@@ -2,9 +2,11 @@
 -- It matches the SQLAlchemy models in app/models (generated from them) plus the foreign-key rules that
 -- app/schema.py enforces on PostgreSQL.
 --
--- You normally don't need to run anything: the backend creates and upgrades all tables on startup.
--- A database created by an older version is upgraded by 001 -> 007 (also applied automatically);
--- don't run this file on such a database. Every statement uses IF NOT EXISTS, so re-running it is safe.
+-- On PostgreSQL the backend does not create or change tables when it starts: it checks that this schema
+-- is in place and refuses to start, naming what is missing, if it is not (DATABASE_AUTO_UPGRADE=true
+-- brings back the old changes at every start). Run this file once on a new, empty database. A database
+-- created by an older version is upgraded by the numbered files it does not have yet (001 -> 009);
+-- don't run this file on such a database. Every statement can be run again safely.
 
 CREATE TABLE IF NOT EXISTS courses (
     id SERIAL PRIMARY KEY,
@@ -286,13 +288,58 @@ CREATE TABLE IF NOT EXISTS issue_comments (
 );
 CREATE INDEX IF NOT EXISTS ix_issue_comments_issue_id ON issue_comments (issue_id);
 
--- Row level security switched on, with no policy, on the login tables, the audit log and the issues. It
--- is meant to keep Supabase's REST API (the anon and authenticated roles) away from them; switching it
--- on does not show by itself that they are kept out. Roles that bypass it are not affected: the tables'
--- owner (the backend connects as that), a superuser, and Supabase's service_role. What each role is
--- granted, and any REVOKE, is checked on the real database in Phase 4 (S-02).
+-- Row level security switched on, with no policy, on every table (migrations 005 to 008). Supabase
+-- publishes the public schema through its REST API and grants its anon and authenticated roles access
+-- by default; with row level security on and no policy they get no rows (tests/test_postgres.py shows
+-- it with those grants). Roles that bypass it are not affected: the tables' owner (the backend
+-- connects as that), a superuser, a role with BYPASSRLS such as Supabase's service_role.
+ALTER TABLE courses ENABLE ROW LEVEL SECURITY;
+ALTER TABLE batches ENABLE ROW LEVEL SECURITY;
+ALTER TABLE timings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE user_management ENABLE ROW LEVEL SECURITY;
+ALTER TABLE face_enrollments ENABLE ROW LEVEL SECURITY;
+ALTER TABLE face_embeddings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE attendance_sessions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE attendance_records ENABLE ROW LEVEL SECURITY;
+ALTER TABLE sheet_sync_logs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE admin_accounts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE admin_sessions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE audit_logs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE issues ENABLE ROW LEVEL SECURITY;
 ALTER TABLE issue_comments ENABLE ROW LEVEL SECURITY;
+
+-- The backend's least-privilege account (migration 009): reads and writes rows through a policy of its
+-- own, cannot change the schema, and may only add to the audit log. Created without a login: see 009.
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'vernex_app') THEN
+        CREATE ROLE vernex_app NOLOGIN;
+    END IF;
+END $$;
+
+GRANT USAGE ON SCHEMA public TO vernex_app;
+
+DO $$
+DECLARE
+    name text;
+BEGIN
+    FOREACH name IN ARRAY ARRAY[
+        'courses', 'batches', 'timings', 'user_management', 'face_enrollments', 'face_embeddings',
+        'attendance_sessions', 'attendance_records', 'sheet_sync_logs',
+        'admin_accounts', 'admin_sessions', 'issues', 'issue_comments', 'audit_logs'
+    ]
+    LOOP
+        IF to_regclass('public.' || quote_ident(name)) IS NOT NULL THEN
+            IF name = 'audit_logs' THEN
+                EXECUTE format('GRANT SELECT, INSERT ON public.%I TO vernex_app', name);
+            ELSE
+                EXECUTE format('GRANT SELECT, INSERT, UPDATE, DELETE ON public.%I TO vernex_app', name);
+            END IF;
+            IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname = 'public' AND tablename = name AND policyname = 'vernex_app_all') THEN
+                EXECUTE format('CREATE POLICY vernex_app_all ON public.%I FOR ALL TO vernex_app USING (true) WITH CHECK (true)', name);
+            END IF;
+        END IF;
+    END LOOP;
+END $$;
+
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO vernex_app;

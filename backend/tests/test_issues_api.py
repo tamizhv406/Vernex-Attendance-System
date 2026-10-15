@@ -427,6 +427,22 @@ def test_a_comment_marks_the_issue_as_updated(asha):
     assert saved(asha, issue["id"]).updated_at > before
 
 
+def test_changes_within_one_clock_tick_still_move_the_last_change_on(asha, owner, monkeypatch):
+    # Windows' clock can give the same time to calls a few milliseconds apart.
+    from app.services import auth_service
+
+    issue = reported(asha)
+    frozen = saved(asha, issue["id"]).updated_at
+    monkeypatch.setattr(auth_service, "clock", lambda: frozen)
+
+    asha.post(f"/issues/{issue['id']}/comments", json={"body": "One more thing."})
+    after_comment = saved(asha, issue["id"]).updated_at
+    owner.put(f"/super-admin/issues/{issue['id']}", json={"status": "in_progress"})
+    after_change = saved(asha, issue["id"]).updated_at
+
+    assert frozen < after_comment < after_change
+
+
 def test_a_super_admins_reply_reaches_the_reporter(asha, owner):
     issue = reported(asha)["id"]
 

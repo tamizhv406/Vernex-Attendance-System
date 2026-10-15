@@ -167,8 +167,8 @@ test("a temporary password is held from the answer until the dialog is closed, a
   let state = secretReducer(null, { type: "copied" });
   assert.equal(state, null);
 
-  state = secretReducer(state, { type: "shown", email: "nia@example.com", password: "k7mx2p-q9trwa-h4bn8c", why: "created", expires: "2026-10-17T09:00:00Z" });
-  assert.deepEqual(state, { email: "nia@example.com", password: "k7mx2p-q9trwa-h4bn8c", why: "created", expires: "2026-10-17T09:00:00Z", copied: false });
+  state = secretReducer(state, { type: "shown", email: "nia@example.com", password: "k7mx2p-q9trwa-h4bn8c", why: "created", expires: "2026-10-17T09:00:00Z" }); // gitleaks:allow (a made-up temporary password for the reveal-once test)
+  assert.deepEqual(state, { email: "nia@example.com", password: "k7mx2p-q9trwa-h4bn8c", why: "created", expires: "2026-10-17T09:00:00Z", copied: false }); // gitleaks:allow (a made-up temporary password for the reveal-once test)
   assert.equal(TEMPORARY_PASSWORD_HOURS, 72);
   state = secretReducer(state, { type: "copied" });
   assert.equal(state.copied, true);

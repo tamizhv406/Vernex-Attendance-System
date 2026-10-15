@@ -134,7 +134,10 @@ def check_pose(image, quality, step, turn=None, front_ratio=None):
     if step == "front" and abs(cx - 0.5) > 0.18:
         return False, "Keep your face centered inside the circle."
     if turn is not None and step in ("front", "close", "far") and abs(turn) >= MIN_HEAD_TURN:
-        return False, "Look straight at the camera."
+        # Which way to correct, not only that something is wrong: most refused front frames of the
+        # first real enrollment (15 October 2026) were a head turned the same way, again and again.
+        back = "right" if turn > 0 else "left"
+        return False, f"Look straight into the camera: turn your head slightly to your {back}."
     if turn is not None and step in ("left", "right"):
         wanted = turn if step == "left" else -turn
         if wanted <= -MIN_HEAD_TURN:

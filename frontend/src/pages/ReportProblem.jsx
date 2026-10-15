@@ -29,6 +29,9 @@ export default function ReportProblem({ onClose, onReported, onOpenReport }) {
   const [errors, setErrors] = useState({});
   const [failure, setFailure] = useState("");
   const [sending, setSending] = useState(false);
+  // Read by the key listener: set at once, so Escape works as soon as "Problem reported" is shown
+  // (the state reaches a listener only after the screen has changed).
+  const sendingNow = useRef(false);
   const [reported, setReported] = useState(null);
   const base = useId();
   const idOf = field => `${base}-${field}`;
@@ -44,12 +47,12 @@ export default function ReportProblem({ onClose, onReported, onOpenReport }) {
   };
   useEffect(() => {
     const onKey = event => {
-      if (event.key === "Escape" && !sending) { event.preventDefault(); close(); }
+      if (event.key === "Escape" && !sendingNow.current) { event.preventDefault(); close(); }
       if (event.key === "Tab") keepFocusIn(event, dialogRef.current);
     };
     addEventListener("keydown", onKey);
     return () => removeEventListener("keydown", onKey);
-  }, [sending]);
+  }, []);
 
   const set = field => event => {
     const value = event.target.value;
@@ -67,6 +70,7 @@ export default function ReportProblem({ onClose, onReported, onOpenReport }) {
     setFailure("");
     if (Object.keys(found).length) { focusFirst(found); return; }
     setSending(true);
+    sendingNow.current = true;
     try {
       const issue = await reportIssue(reportPayload(form, attached));
       setReported(issue);
@@ -76,6 +80,7 @@ export default function ReportProblem({ onClose, onReported, onOpenReport }) {
       if (Object.keys(named).length) { setErrors(named); focusFirst(named); }
       else setFailure(error.status ? error.message : UNREACHABLE);
     } finally {
+      sendingNow.current = false;
       setSending(false);
     }
   };

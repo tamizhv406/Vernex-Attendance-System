@@ -555,7 +555,9 @@ def test_the_cookie_gets_a_new_access_token_when_the_old_one_has_run_out(backend
         assert db.query(AdminSession).one().last_used_at == datetime(2026, 1, 5, 9, 20, 0)
 
 
-def test_a_login_lasts_seven_days_and_no_longer(anon_client, asha, time):
+def test_a_login_lasts_seven_days_and_no_longer(anon_client, asha, time, monkeypatch):
+    # The absolute limit, for a login kept in use; the idle limit has tests of its own below.
+    monkeypatch.setattr(settings, "auth_idle_minutes", 0)
     sign_in(anon_client)
 
     time.advance(days=6, hours=23, minutes=59)
@@ -996,3 +998,37 @@ def test_an_account_that_cannot_be_saved_is_refused_with_the_reason(db_session, 
 
     assert (error.value.status, error.value.message) == (status, reason)
     assert db_session.query(AdminAccount).count() == 1
+
+
+# ---- logins left unused (task S-16) ------------------------------------------------------------------
+# The console renews its token every 14 minutes while it is open, and logs itself out after 30 minutes
+# without a click or a key. The server's side: a login not renewed for 30 minutes cannot be renewed.
+
+def test_a_login_unused_for_more_than_the_idle_limit_ends(anon_client, asha, time, backend):
+    sign_in(anon_client)
+
+    time.advance(minutes=settings.auth_idle_minutes, seconds=1)
+    ended = anon_client.post("/auth/refresh")
+
+    assert (ended.status_code, ended.json()) == (401, ENDED)
+    with backend.db() as db:
+        assert db.query(AdminSession).one().revoked_at is not None
+    # Gone for good: coming back sooner does not revive it.
+    assert anon_client.post("/auth/refresh").status_code == 401
+
+
+def test_a_login_renewed_within_the_idle_limit_goes_on(anon_client, asha, time):
+    sign_in(anon_client)
+
+    for _ in range(12):  # three hours, renewed every 14 minutes as the console does
+        time.advance(minutes=14)
+        assert anon_client.post("/auth/refresh").status_code == 200
+
+
+def test_an_idle_limit_of_0_switches_the_rule_off(anon_client, asha, time, monkeypatch):
+    monkeypatch.setattr(settings, "auth_idle_minutes", 0)
+    sign_in(anon_client)
+
+    time.advance(hours=5)
+
+    assert anon_client.post("/auth/refresh").status_code == 200

@@ -1,13 +1,17 @@
 import React, { useEffect, useRef, useState } from "react";
 import { MoveHorizontal, Play, ScanFace, ScanLine, ShieldCheck, Square, Sun, Timer, Users, Video } from "lucide-react";
 import { CameraPlaceholder, CameraView, faceVerdict, useCamera } from "../camera";
-import { completeAttendanceSession, recognizeFace, startAttendanceSession } from "../lib/api";
+import { completeAttendanceSession, recognizeFace, session as login, startAttendanceSession } from "../lib/api";
+import { withRecord } from "../lib/attendance";
 import { batchName, courseName, faceEnrolled, formatClock, mapAttendance } from "../lib/format";
-import { Button, Card, DataTable, EmptyState, FormSelect, Identity, Info, Notice, Page, StatusBadge, tone } from "../ui";
+import { Button, Card, DataTable, EmptyState, FormInput, FormSelect, Identity, Info, Notice, Page, StatusBadge, tone } from "../ui";
+import { SessionRegister } from "./handMarks";
 
 export default function AttendanceScanner({ data }) {
   const [courseId, setCourseId] = useState("");
   const [batchId, setBatchId] = useState("");
+  // "HH:MM", or empty for the batch's timetable (or nobody late at all when it has none).
+  const [lateAfter, setLateAfter] = useState("");
   const [activeSession, setActiveSession] = useState(null);
   const [scan, setScan] = useState({ faces: [], frame: null, status: "" });
   // Names this camera to the backend, which follows faces per camera: two phones scanning the same
@@ -22,6 +26,12 @@ export default function AttendanceScanner({ data }) {
   const batches = data.batches.filter(batch => Number(batch.course_id) === Number(courseId));
   const students = data.people.filter(person => person.person_type === "student" && Number(person.course_id) === Number(courseId) && Number(person.batch_id) === Number(batchId));
   useEffect(() => { setBatchId(""); setActiveSession(null); }, [courseId]);
+  // A scanner left running through a class is not an idle console: it stays logged in meanwhile.
+  useEffect(() => {
+    if (!activeSession) return;
+    login.keepAwake("scanner", true);
+    return () => login.keepAwake("scanner", false);
+  }, [activeSession]);
   useEffect(() => {
     setScan({ faces: [], frame: null, status: "" });
     if (!activeSession) return;
@@ -98,8 +108,9 @@ export default function AttendanceScanner({ data }) {
         course_id: Number(courseId),
         batch_id: Number(batchId),
         timing_id: batch?.timing_id || null,
-        session_date: new Date().toISOString().slice(0, 10),
-        start_time: new Date().toTimeString().slice(0, 8)
+        // No date or start time: the backend takes both from the school's own clock. (The browser's
+        // toISOString() is the UTC date, which in India is still yesterday until 05:30.)
+        ...(lateAfter ? { grace_time: `${lateAfter}:00` } : {})
       });
       setActiveSession(session);
       data.notify("Attendance session started.");
@@ -122,7 +133,15 @@ export default function AttendanceScanner({ data }) {
       setStopping(false);
     }
   };
-  const markedCount = students.filter(student => marks[student.id]).length;
+  const sessionRecords = activeSession ? data.records.filter(record => Number(record.session_id) === Number(activeSession.id)) : [];
+  const markedCount = students.filter(student => marks[student.id] || sessionRecords.some(record => Number(record.person_id) === Number(student.id))).length;
+  // A student marked or corrected by hand: the same lists the scanner's marks go to.
+  const handMarked = (record, student) => {
+    data.setRecords(current => withRecord(current, record));
+    setMarks(current => ({ ...current, [student.id]: record.status }));
+    setEvents(current => [record, ...current.filter(item => item.id !== record.id)].slice(0, 8));
+    data.notify(`${student.full_name} marked ${record.status} by hand.`);
+  };
   const notEnrolled = students.filter(student => !faceEnrolled(student)).length;
   const asking = scan.faces.some(face => face.result === "challenge");
 
@@ -131,12 +150,12 @@ export default function AttendanceScanner({ data }) {
     <div className="grid grid-cols-1 gap-5 xl:grid-cols-[minmax(0,1.25fr)_minmax(0,.75fr)]">
       <Card title="Camera" subtitle={activeSession ? activeSession.session_name : "No session running"} action={<StatusBadge tone={activeSession ? "success" : "neutral"}>{activeSession ? "Session active" : "Stopped"}</StatusBadge>}>
         {activeSession ? <div className="grid gap-3">
-          <CameraView camera={camera} faces={scan.faces} frame={scan.frame} />
+          <CameraView camera={camera} faces={scan.faces} frame={scan.frame} mirror />
           <p className="flex items-start gap-2 text-sm font-medium text-ink-muted" aria-live="polite">
             <span className="relative mt-1.5 flex h-2 w-2 shrink-0" aria-hidden="true"><span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" /><span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" /></span>
             {scan.status || "Starting camera and loading face models. The first scan can take a minute."}
           </p>
-          {asking && <Notice tone="info">Blue boxes: that student must look straight at the camera, then turn their head the way their box says (their own left or right). A photo or a video cannot follow the instruction.</Notice>}
+          {asking && <Notice tone="info">Blue boxes: that student holds still, facing the camera, then turns their head the way their box says (their own left or right). A photo or a video cannot follow the instruction. A student who cannot be verified is marked by hand below.</Notice>}
           {scan.ms > 1200 && <Notice tone="warning">Each frame takes about {(scan.ms / 1000).toFixed(1)} s to check on this computer. A student is marked after {scan.faces[0]?.confirm_needed || 3} separate checks, so everyone needs to stay in view for a few seconds.</Notice>}
           <ul className="flex flex-wrap gap-x-4 gap-y-1.5 text-xs text-ink-muted" aria-label="Box colours">
             <Legend swatch="bg-emerald-500">Identity verified, marked</Legend>
@@ -153,6 +172,7 @@ export default function AttendanceScanner({ data }) {
           <div className="grid gap-4">
             <FormSelect label="Course" value={courseId} onChange={e => setCourseId(e.target.value)} disabled={Boolean(activeSession)} options={data.courses.map(course => ({ value: course.id, label: course.course_name }))} empty="Create a course first" />
             <FormSelect label="Batch" value={batchId} onChange={e => setBatchId(e.target.value)} disabled={Boolean(activeSession)} options={batches.map(batch => ({ value: batch.id, label: batch.batch_name }))} empty={courseId ? "Create a batch under this course" : "Select course first"} />
+            {!activeSession && <FormInput label="Late after (optional)" type="time" value={lateAfter} onChange={e => setLateAfter(e.target.value)} hint="Students marked after this time are late. Empty: the batch's timetable decides, if it has one." />}
             {!activeSession && courseId && batchId && notEnrolled > 0 && <Notice tone="warning">{notEnrolled} of {students.length} students in this batch have no face enrolled and cannot be recognized.</Notice>}
             {activeSession ? <>
               <div className="grid grid-cols-2 gap-2">
@@ -160,6 +180,8 @@ export default function AttendanceScanner({ data }) {
                 <Info label="Batch" value={batchName(data.batches, activeSession.batch_id)} />
                 <Info label="Date" value={activeSession.session_date} />
                 <Info label="Started" value={activeSession.start_time || "-"} />
+                <Info label="Late after" value={activeSession.grace_time ? activeSession.grace_time.slice(0, 5) : "Never"} />
+                <Info label="Absent after" value={activeSession.end_time ? activeSession.end_time.slice(0, 5) : "Never"} />
               </div>
               <div>
                 <div className="flex items-center justify-between text-sm"><span className="font-medium text-ink-soft">Marked this session</span><span className="font-bold tabular-nums text-ink">{markedCount} of {students.length}</span></div>
@@ -179,12 +201,12 @@ export default function AttendanceScanner({ data }) {
     </div>
 
     <div className="grid grid-cols-1 gap-5 xl:grid-cols-[minmax(0,1.25fr)_minmax(0,.75fr)]">
-      <Card title="Students in this batch" subtitle={students.length ? `${students.length} student${students.length === 1 ? "" : "s"}` : undefined}>
-        <DataTable loading={data.loading} caption="Students in the selected batch" columns={["Student", "Face", "This session"]} rows={students.map(student => [
+      <Card title="Students in this batch" subtitle={activeSession ? "Mark a student by hand when the scanner cannot (locked, not recognized, no face enrolled), or correct a mark." : students.length ? `${students.length} student${students.length === 1 ? "" : "s"}` : undefined}>
+        {activeSession ? <SessionRegister session={activeSession} students={students} records={sessionRecords} onRecord={handMarked} loading={data.loading} /> : <DataTable loading={data.loading} caption="Students in the selected batch" columns={["Student", "Face", "This session"]} rowKeys={students.map(student => student.id)} rows={students.map(student => [
           <Identity name={student.full_name} detail={student.person_code} />,
           <StatusBadge status={faceEnrolled(student) ? "Enrolled" : "Pending"} />,
           marks[student.id] ? <StatusBadge status={marks[student.id]} /> : <StatusBadge tone="neutral">Not marked</StatusBadge>
-        ])} empty={<EmptyState icon={Users} title={courseId && batchId ? "No students found in this batch" : "Select a course and batch"} message={courseId && batchId ? "Add students to this batch first." : "The roster of the batch is listed here."} />} />
+        ])} empty={<EmptyState icon={Users} title={courseId && batchId ? "No students found in this batch" : "Select a course and batch"} message={courseId && batchId ? "Add students to this batch first." : "The roster of the batch is listed here."} />} />}
       </Card>
 
       <div className="space-y-5">
@@ -200,7 +222,7 @@ export default function AttendanceScanner({ data }) {
           <ul className="grid gap-3 text-sm text-ink-soft">
             <Tip icon={Sun}>Even light on faces. Avoid a bright window behind the class.</Tip>
             <Tip icon={Timer}>Each person stays in view for a few seconds while several separate looks are checked.</Tip>
-            <Tip icon={MoveHorizontal}>When a box turns blue, look straight, then turn your head the way it says.</Tip>
+            <Tip icon={MoveHorizontal}>When a box turns blue, hold still facing the camera, then turn your head the way it says.</Tip>
             <Tip icon={ShieldCheck}>A face judged to be a photo or a screen is rejected and not marked.</Tip>
           </ul>
         </Card>

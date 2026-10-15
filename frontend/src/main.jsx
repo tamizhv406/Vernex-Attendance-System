@@ -43,6 +43,13 @@ function App() {
   const setPage = (pageId, issue = null) => { show(pageId, false, issue); scrollTo({ top: 0 }); };
   // On load: is this browser still signed in? Nothing of the app is shown until that is known.
   useEffect(() => { session.restore(); }, []);
+  // Every click, key and touch counts as activity: 30 minutes without any logs the console out.
+  useEffect(() => {
+    const events = ["pointerdown", "keydown", "wheel", "touchstart"];
+    const touch = () => session.touch();
+    events.forEach(name => addEventListener(name, touch, { passive: true }));
+    return () => events.forEach(name => removeEventListener(name, touch));
+  }, []);
   useEffect(() => {
     const sync = () => setPlace(locationView(location.pathname));
     addEventListener("popstate", sync);

@@ -32,6 +32,7 @@ from app.models.admin_account import AdminAccount, AdminSession
 from app.models.audit_log import AuditLog  # noqa: F401  (its table is created with the others)
 from app.models.issue import Issue
 from app.services import audit_service, auth_service, password_service  # noqa: F401  (audit_service: the face enrollment listener)
+from app.utils import rate_limit
 
 PRODUCTION_HASHER = password_service._hasher
 # The same algorithm with the smallest cost it allows. Hundreds of tests create accounts; what
@@ -45,6 +46,8 @@ def auth_memory(monkeypatch):
     monkeypatch.setattr(password_service, "_hasher", FAST_HASHER)
     auth_service.reset_memory()
     auth_service._decoy_hash.cache_clear()
+    rate_limit.frames.reset()
+    rate_limit.uploads.reset()
     yield
     auth_service.reset_memory()
     auth_service._decoy_hash.cache_clear()
