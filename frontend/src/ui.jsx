@@ -96,9 +96,9 @@ export function FormInput({ label, hint, error, className = "", ...props }) {
   </FieldShell>;
 }
 
-export function FormTextarea({ label, hint, className = "", ...props }) {
-  return <FieldShell label={label} hint={hint} className={className}>
-    <textarea className="field h-auto min-h-24 py-3" {...props} />
+export function FormTextarea({ label, hint, error, className = "", ...props }) {
+  return <FieldShell label={props.required ? `${label} *` : label} hint={hint} error={error} className={className}>
+    <textarea className={`field h-auto min-h-24 py-3 ${error ? "border-red-400" : ""}`} aria-invalid={Boolean(error) || undefined} {...props} />
   </FieldShell>;
 }
 

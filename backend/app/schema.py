@@ -6,6 +6,7 @@ from app.models.attendance import AttendanceRecord, AttendanceSession
 from app.models.audit_log import AuditLog
 from app.models.course import Course, CourseBatch
 from app.models.face_embedding import FaceEmbedding, FaceEnrollment
+from app.models.issue import Issue, IssueComment
 from app.models.person import Person
 from app.models.sync_log import SheetSyncLog
 from app.models.timing import Timing
@@ -256,9 +257,12 @@ POSTGRES_REPAIR_STATEMENTS = [
     """
     CREATE INDEX IF NOT EXISTS idx_attendance_records_course_batch ON attendance_records(course_id, batch_id)
     """,
-    # Row level security with no policy: the login tables and the audit log can be reached through
-    # this backend only, never through Supabase's own REST API. Switching it on again where it is on
-    # changes nothing.
+    # Row level security switched on, with no policy, for the login tables, the audit log and the
+    # reported issues. It is meant to keep Supabase's own REST API (the anon and authenticated roles)
+    # away from them, so that this backend is the way in; switching it on does not show by itself that
+    # they are kept out. Roles that bypass it (the tables' owner, which this backend connects as, a
+    # superuser, Supabase's service_role) are not affected, and what each role is granted is checked
+    # on the real database in Phase 4 (S-02). Switching it on again where it is on changes nothing.
     """
     ALTER TABLE admin_accounts ENABLE ROW LEVEL SECURITY
     """,
@@ -267,6 +271,12 @@ POSTGRES_REPAIR_STATEMENTS = [
     """,
     """
     ALTER TABLE audit_logs ENABLE ROW LEVEL SECURITY
+    """,
+    """
+    ALTER TABLE issues ENABLE ROW LEVEL SECURITY
+    """,
+    """
+    ALTER TABLE issue_comments ENABLE ROW LEVEL SECURITY
     """,
 ]
 

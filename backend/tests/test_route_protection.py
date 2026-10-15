@@ -68,9 +68,11 @@ def test_the_walk_really_covers_the_application():
                      "/people/{person_id}", "/users/upload", "/courses/upload/template", "/timings/{timing_id}", "/attendance/mark",
                      "/attendance/session/start", "/face/recognize", "/face/enrollment/frame", "/face/enrollment/start/{person_id}",
                      "/face/timings", "/sheet/sync-pending", "/sheet/status", "/auth/login", "/auth/me", "/auth/change-password",
-                     "/super-admin/dashboard", "/super-admin/admins", "/super-admin/admins/{account_id}/disable", "/super-admin/audit-logs"):
+                     "/super-admin/dashboard", "/super-admin/admins", "/super-admin/admins/{account_id}/disable", "/super-admin/audit-logs",
+                     "/issues", "/issues/{issue_id}", "/issues/{issue_id}/comments", "/super-admin/issues", "/super-admin/issues/open-count",
+                     "/super-admin/issues/{issue_id}", "/super-admin/issues/{issue_id}/comments"):
         assert expected in paths, expected
-    assert len(PORTAL) == 10 and len(CONSOLE) >= 50
+    assert len(PORTAL) == 15 and len(CONSOLE) >= 54
 
 
 def test_the_walk_and_the_description_of_the_api_list_the_same_routes():
@@ -79,6 +81,20 @@ def test_the_walk_and_the_description_of_the_api_list_the_same_routes():
     described = sorted((method.upper(), path) for path, operations in app.openapi()["paths"].items() for method in operations)
 
     assert described == ROUTES
+
+
+def test_every_route_that_answers_a_page_at_a_time_has_the_same_upper_limit():
+    from app.routes.paging import MAX_PAGE, MAX_PAGE_SIZE
+
+    paged = {}
+    for path, operations in app.openapi()["paths"].items():
+        for method, operation in operations.items():
+            limits = {parameter["name"]: parameter["schema"] for parameter in operation.get("parameters", []) if parameter["name"] in ("page", "page_size")}
+            if limits:
+                paged[(method.upper(), path)] = (limits["page"].get("maximum"), limits["page_size"].get("maximum"))
+
+    assert sorted(paged) == [("GET", "/issues"), ("GET", "/super-admin/audit-logs"), ("GET", "/super-admin/issues")]
+    assert set(paged.values()) == {(MAX_PAGE, MAX_PAGE_SIZE)} and (MAX_PAGE, MAX_PAGE_SIZE) == (10_000, 100)
 
 
 def test_the_public_list_is_short_and_names_only_routes_that_exist():

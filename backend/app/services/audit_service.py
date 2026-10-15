@@ -16,6 +16,7 @@ from app.models.attendance import AttendanceRecord
 from app.models.audit_log import AuditLog
 from app.models.course import Course, CourseBatch
 from app.models.face_embedding import FaceEnrollment
+from app.models.issue import Issue
 from app.models.person import Person
 from app.serializers import audit_log_data
 
@@ -38,8 +39,10 @@ ACTIONS = {
     "face_enrollment.completed": "Face enrollment completed",
     "face_enrollment.cancelled": "Face enrollment cancelled",
     "import.uploaded": "Bulk upload",
+    "issue.created": "Issue reported",
+    "issue.status_changed": "Issue status changed",
 }
-TARGET_TYPES = ("admin_account", "person", "course", "batch", "attendance_record")
+TARGET_TYPES = ("admin_account", "person", "course", "batch", "attendance_record", "issue")
 
 # Keys that are never kept, at any depth, whatever their value.
 _FORBIDDEN_KEY = re.compile(r"(?i)pass(word|wd)?|token|secret|hash|cookie|authori[sz]ation|credential|embedding|vector|image|frame|photo")
@@ -160,6 +163,7 @@ def describe(db: Session, rows) -> list:
         "course": _labels(db, Course, wanted.get("course"), lambda row: f"{row.course_name} ({row.course_code})"),
         "batch": _labels(db, CourseBatch, wanted.get("batch"), lambda row: row.batch_name),
         "attendance_record": _labels(db, AttendanceRecord, wanted.get("attendance_record"), lambda row: f"{row.person_name} ({row.person_code}), {row.attendance_date.isoformat()}"),
+        "issue": _labels(db, Issue, wanted.get("issue"), lambda row: f"#{row.id} {row.title}"),
     }
     return [
         audit_log_data(entry, actors.get(entry.actor_id), labels.get(entry.target_type, {}).get(entry.target_id) or _label_from_details(entry), ACTIONS.get(entry.action))

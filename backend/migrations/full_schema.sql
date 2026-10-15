@@ -3,7 +3,7 @@
 -- app/schema.py enforces on PostgreSQL.
 --
 -- You normally don't need to run anything: the backend creates and upgrades all tables on startup.
--- A database created by an older version is upgraded by 001 -> 006 (also applied automatically);
+-- A database created by an older version is upgraded by 001 -> 007 (also applied automatically);
 -- don't run this file on such a database. Every statement uses IF NOT EXISTS, so re-running it is safe.
 
 CREATE TABLE IF NOT EXISTS courses (
@@ -248,8 +248,51 @@ CREATE INDEX IF NOT EXISTS ix_audit_logs_action ON audit_logs (action);
 CREATE INDEX IF NOT EXISTS ix_audit_logs_created_at ON audit_logs (created_at);
 CREATE INDEX IF NOT EXISTS ix_audit_logs_target ON audit_logs (target_type, target_id);
 
--- Row level security with no policy on the login tables and the audit log: nothing reaches them
--- through Supabase's REST API. The backend connects as the tables' owner and is not affected.
+-- Problems reported from the console (007). reported_by is the account that was logged in; accounts
+-- are disabled, never deleted (RESTRICT). page_url is a path inside the console; device_info is JSON
+-- with the browser, the OS and the screen. A resolved issue always has a resolution note. Times are UTC.
+CREATE TABLE IF NOT EXISTS issues (
+    id SERIAL PRIMARY KEY,
+    title VARCHAR(120) NOT NULL,
+    description TEXT NOT NULL,
+    category VARCHAR(30) NOT NULL,
+    severity VARCHAR(20) NOT NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'open',
+    page_url VARCHAR(255),
+    device_info JSON,
+    reported_by INTEGER NOT NULL REFERENCES admin_accounts (id) ON DELETE RESTRICT,
+    assigned_to INTEGER REFERENCES admin_accounts (id) ON DELETE SET NULL,
+    resolution_note TEXT,
+    created_at TIMESTAMP NOT NULL DEFAULT (now() AT TIME ZONE 'utc'),
+    updated_at TIMESTAMP NOT NULL DEFAULT (now() AT TIME ZONE 'utc'),
+    resolved_at TIMESTAMP,
+    CONSTRAINT ck_issues_category CHECK (category IN ('bug', 'face_recognition', 'attendance_data', 'camera_device', 'login_access', 'other')),
+    CONSTRAINT ck_issues_severity CHECK (severity IN ('low', 'medium', 'high', 'critical')),
+    CONSTRAINT ck_issues_status CHECK (status IN ('open', 'in_progress', 'resolved', 'closed')),
+    CONSTRAINT ck_issues_resolution_note CHECK (status <> 'resolved' OR (resolution_note IS NOT NULL AND length(trim(resolution_note)) > 0))
+);
+CREATE INDEX IF NOT EXISTS ix_issues_status ON issues (status);
+CREATE INDEX IF NOT EXISTS ix_issues_reported_by ON issues (reported_by);
+CREATE INDEX IF NOT EXISTS ix_issues_assigned_to ON issues (assigned_to);
+CREATE INDEX IF NOT EXISTS ix_issues_created_at ON issues (created_at);
+
+-- The thread under an issue (007). Comments are never changed or removed by the app.
+CREATE TABLE IF NOT EXISTS issue_comments (
+    id SERIAL PRIMARY KEY,
+    issue_id INTEGER NOT NULL REFERENCES issues (id) ON DELETE CASCADE,
+    author_id INTEGER NOT NULL REFERENCES admin_accounts (id) ON DELETE RESTRICT,
+    body TEXT NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT (now() AT TIME ZONE 'utc')
+);
+CREATE INDEX IF NOT EXISTS ix_issue_comments_issue_id ON issue_comments (issue_id);
+
+-- Row level security switched on, with no policy, on the login tables, the audit log and the issues. It
+-- is meant to keep Supabase's REST API (the anon and authenticated roles) away from them; switching it
+-- on does not show by itself that they are kept out. Roles that bypass it are not affected: the tables'
+-- owner (the backend connects as that), a superuser, and Supabase's service_role. What each role is
+-- granted, and any REVOKE, is checked on the real database in Phase 4 (S-02).
 ALTER TABLE admin_accounts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE admin_sessions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE audit_logs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE issues ENABLE ROW LEVEL SECURITY;
+ALTER TABLE issue_comments ENABLE ROW LEVEL SECURITY;

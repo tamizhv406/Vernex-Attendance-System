@@ -13,7 +13,6 @@ from pathlib import Path
 import numpy as np
 import pytest
 from sqlalchemy import create_engine, inspect
-from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import sessionmaker
 
 from app.config import settings
@@ -762,7 +761,9 @@ def test_the_dashboard_counts_what_is_in_the_database(backend, owner, staff):
                               "temporary_password_expired": 0, "locked": 1}
     assert data["attendance_today"] == {"date": today.isoformat(), "total": 4, "present": 2, "late": 1, "absent": 1, "visited": 0}
     assert [entry["target_label"] for entry in data["recent_activity"]] == [f"made{number}@example.com" for number in range(11, 1, -1)]
-    assert data["issues"] is None
+    # Nobody has reported anything yet (tests/test_issue_inbox.py counts issues that are there).
+    assert data["issues"]["open"] == {"total": 0, "low": 0, "medium": 0, "high": 0, "critical": 0}
+    assert (data["issues"]["resolved_this_week"], data["issues"]["newest_open"]) == (0, [])
 
 
 def test_an_empty_dashboard_has_zeros_and_no_activity(owner):
@@ -957,22 +958,7 @@ def test_scanner_marks_and_reading_pages_write_nothing(client, school):
     assert audit(client) == []
 
 
-# ---- an action and its entry are saved together -------------------------------------------------
-
-@pytest.fixture()
-def audit_breaks(monkeypatch):
-    """audit_breaks("admin.created", ...): writing those entries fails, as it would on a full disk."""
-    writing = audit_service.record
-
-    def for_actions(*actions):
-        def record(db, action, **fields):
-            if action in actions:
-                raise OperationalError("INSERT INTO audit_logs (...) VALUES (...)", {}, Exception("disk I/O error"))
-            return writing(db, action, **fields)
-        monkeypatch.setattr(audit_service, "record", record)
-
-    return for_actions
-
+# ---- an action and its entry are saved together (audit_breaks: tests/conftest.py) ---------------
 
 def test_an_account_change_whose_entry_cannot_be_written_is_not_made(backend, owner, asha, audit_breaks):
     audit_breaks("admin.created", "admin.disabled", "admin.password_reset")
@@ -1152,9 +1138,20 @@ def test_the_log_comes_in_pages(owner, history):
     ({"action": "admin.deleted_everything"}, 400), ({"target_type": "spaceship"}, 400),
     ({"date_from": "2026-10-14", "date_to": "2026-10-13"}, 400), ({"date_from": "yesterday"}, 422),
     ({"page": 0}, 422), ({"page_size": 101}, 422), ({"actor_id": "someone"}, 422),
+    ({"page": 10_001}, 422), ({"page": 10 ** 19}, 422),
 ])
 def test_a_filter_that_makes_no_sense_is_refused(owner, history, query, status):
     assert owner.get("/super-admin/audit-logs", params=query).status_code == status
+
+
+def test_the_last_page_of_the_log_that_may_be_asked_for_is_answered_and_the_next_one_refused(owner, history):
+    last = owner.get("/super-admin/audit-logs", params={"page": 10_000})
+    beyond = owner.get("/super-admin/audit-logs", params={"page": 10_001})
+
+    assert (last.status_code, last.json()["data"]["items"], last.json()["data"]["total"]) == (200, [], 4)
+    # Refused, without repeating the number, before the database is asked for an offset it cannot hold.
+    assert beyond.status_code == 422 and beyond.json()["detail"][0]["loc"] == ["query", "page"]
+    assert "10001" not in beyond.text and '"input"' not in beyond.text
 
 
 def test_the_viewer_lists_every_action_with_its_words(owner):

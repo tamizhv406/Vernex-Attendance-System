@@ -230,4 +230,46 @@ export function getAuditActions() {
   return request("/super-admin/audit-logs/actions");
 }
 
+// Every issue, for the inbox. Resolves to { items, total, page, page_size }.
+export function getInboxIssues(query = {}) {
+  return request(`/super-admin/issues${queryString(query)}`);
+}
+
+// Resolves to { count }: issues that are open or in progress, for the portal's badge.
+export function getOpenIssueCount() {
+  return request("/super-admin/issues/open-count");
+}
+
+export function getInboxIssue(id) {
+  return request(`/super-admin/issues/${id}`);
+}
+
+// data: any of { status, resolution_note, assigned_to }.
+export function updateIssue(id, data) {
+  return request(`/super-admin/issues/${id}`, { method: "PUT", body: JSON.stringify(data) });
+}
+
+export function commentOnIssue(id, body) {
+  return request(`/super-admin/issues/${id}/comments`, { method: "POST", body: JSON.stringify({ body }) });
+}
+
+// ---- reporting a problem (anyone who is logged in, about their own issues only) -----------------
+
+export function reportIssue(data) {
+  return request("/issues", { method: "POST", body: JSON.stringify(data) });
+}
+
+// Resolves to { items, total, page, page_size }.
+export function getMyIssues(query = {}) {
+  return request(`/issues${queryString(query)}`);
+}
+
+export function getMyIssue(id) {
+  return request(`/issues/${id}`);
+}
+
+export function commentOnMyIssue(id, body) {
+  return request(`/issues/${id}/comments`, { method: "POST", body: JSON.stringify({ body }) });
+}
+
 export { API_BASE_URL };

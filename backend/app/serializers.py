@@ -49,6 +49,49 @@ def managed_account_data(account, now):
     )
 
 
+def _person(account):
+    # Who wrote, reported or was given an issue: a name to show, and nothing about the account itself.
+    return {"id": account.id, "full_name": account.full_name, "role": account.role} if account else None
+
+
+def issue_comment_data(comment):
+    return {"id": comment.id, "body": comment.body, "created_at": utc_iso(comment.created_at), "author": _person(comment.author)}
+
+
+def issue_row_data(issue, for_reporter=False):
+    """One line of a list of issues: enough to recognise it, without its description or its thread.
+    For its reporter (My reports) who it is assigned to is left out."""
+    data = {
+        "id": issue.id,
+        "title": issue.title,
+        "category": issue.category,
+        "severity": issue.severity,
+        "status": issue.status,
+        "created_at": utc_iso(issue.created_at),
+        "updated_at": utc_iso(issue.updated_at),
+        "resolved_at": utc_iso(issue.resolved_at),
+    }
+    if not for_reporter:
+        data["reporter"] = dict(_person(issue.reporter), email=issue.reporter.email)
+        data["assigned_to"] = issue.assigned_to
+        data["assignee"] = _person(issue.assignee)
+    return data
+
+
+def issue_data(issue, comments=(), for_reporter=False):
+    """The page of one issue, with its thread (oldest first). Its reporter sees the resolution note
+    only while it applies, once the issue has been resolved. A super admin also sees the note that an
+    issue opened again still keeps, to start from when resolving it once more."""
+    return dict(
+        issue_row_data(issue, for_reporter),
+        description=issue.description,
+        page_url=issue.page_url,
+        device_info=issue.device_info or {},
+        resolution_note=issue.resolution_note if issue.resolved_at or not for_reporter else None,
+        comments=[issue_comment_data(comment) for comment in comments],
+    )
+
+
 def audit_log_data(entry, actor=None, target_label=None, action_label=None):
     return {
         "id": entry.id,

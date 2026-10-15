@@ -169,8 +169,13 @@ The first time, Windows may ask whether Node.js may use the network — click **
    Green box = recognized, red box = unknown or "Photo detected".
 4. A student is marked after being matched in 3 frames within 10 seconds (`present`, or `late` after the grace time).
 5. **Stop Session**, then open **Reports**.
+6. Something not working? **Report a problem** — in the top bar on a computer, under **More** on a
+   phone (the scanner page included). Give it a title, a category, a severity and what happened; the
+   page you were on and your browser, system and screen size are sent with it. Follow it, and answer,
+   in **My reports**. Super admins see every report in the Super Admin portal under **Issues**, where
+   they reply, change its status and resolve it with a note you can read.
 
-More detail (recognition settings, accuracy) is in `README.md`.
+More detail (recognition settings, accuracy, issue reporting) is in `README.md`.
 
 ---
 
@@ -195,6 +200,8 @@ More detail (recognition settings, accuracy) is in `README.md`.
 | "Too many login attempts from this device" | One device gets ten attempts a minute. Wait a minute |
 | Logged out again after reloading the page | Open the app with the **https://** link (or `http://localhost:5173` on the PC itself). The login cookie only travels over HTTPS |
 | Forgot the super admin password | `backend\.venv\Scripts\python backend\scripts\create_super_admin.py --force`, type that account's email, confirm it, choose a new password. The Super Admin portal cannot reset the password of an account that is or has been a super admin, only that of other admins |
+| A report of mine says "Issue not found" | My reports opens only your own reports. A link to someone else's issue says "not found" on purpose |
+| "This issue is closed, so it takes no more comments" | A closed issue takes no comments. Report a new problem, or ask a super admin to open the issue again |
 | "This temporary password has expired" | A temporary password works for 72 hours. For an **admin** account, a super admin resets the password again in the portal (Admins) and passes on the new one. For an account that **is or has been a super admin**, the portal cannot reset it: on the server run `backend\.venv\Scripts\python backend\scripts\create_super_admin.py --force`, type that account's email twice, then choose a new password |
 
 Run the tests (optional):

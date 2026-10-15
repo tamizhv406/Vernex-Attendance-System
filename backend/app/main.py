@@ -10,8 +10,8 @@ from sqlalchemy.orm import Session
 
 from app.config import allowed_origins, settings
 from app.database import get_db
-from app.models import admin_account, attendance, audit_log, course, face_embedding, person, sync_log, timing
-from app.routes import attendance_routes, auth_routes, course_routes, face_routes, import_routes, person_routes, sheet_routes, super_admin_routes, timing_routes
+from app.models import admin_account, attendance, audit_log, course, face_embedding, issue, person, sync_log, timing
+from app.routes import attendance_routes, auth_routes, course_routes, face_routes, import_routes, issue_routes, person_routes, sheet_routes, super_admin_routes, timing_routes
 from app.schema import init_database_schema
 from app.security import require_admin, require_super_admin
 from app.services import auth_service, face_service
@@ -52,12 +52,17 @@ def startup():
     threading.Thread(target=warm_up, daemon=True).start()
 
 
+def repeats_nothing(path: str) -> bool:
+    return path == "/issues" or path.startswith(("/auth/", "/super-admin/", "/issues/"))
+
+
 @app.exception_handler(RequestValidationError)
 async def malformed_request(request: Request, error: RequestValidationError):
     # FastAPI answers a malformed request by repeating what was sent ("input"). On the auth routes
-    # what was sent is a password, and on the portal's account routes it can be one typed into a
-    # field that does not exist, so there the answer says what is wrong and repeats nothing.
-    if not request.url.path.startswith(("/auth/", "/super-admin/")):
+    # what was sent is a password, on the portal's account routes it can be one typed into a field
+    # that does not exist, and a reported issue holds whatever was typed into it. There the answer
+    # says what is wrong and repeats nothing.
+    if not repeats_nothing(request.url.path):
         return await request_validation_exception_handler(request, error)
     problems = [{"type": item.get("type"), "loc": list(item.get("loc", ())), "msg": item.get("msg")} for item in error.errors()]
     return JSONResponse(status_code=422, content={"detail": problems})
@@ -108,5 +113,7 @@ app.include_router(timing_routes.router, dependencies=logged_in)
 app.include_router(attendance_routes.router, dependencies=logged_in)
 app.include_router(face_routes.router, dependencies=logged_in)
 app.include_router(sheet_routes.router, dependencies=logged_in)
+# Reporting a problem: any account that is logged in, about its own issues only.
+app.include_router(issue_routes.router, dependencies=logged_in)
 # Super admins only, for every route of the portal, whatever each route asks for itself.
 app.include_router(super_admin_routes.router, dependencies=[Depends(require_super_admin)])

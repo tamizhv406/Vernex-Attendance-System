@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.models.admin_account import ROLES, STATUSES, AdminAccount
 from app.models.attendance import AttendanceRecord
-from app.services import audit_service, auth_service
+from app.services import audit_service, auth_service, issue_service
 from app.services.auth_service import Actor, AuthError
 from app.utils.time_utils import today_local
 
@@ -236,6 +236,6 @@ def dashboard(db: Session) -> dict:
             "visited": statuses.get("visited", 0),
         },
         "recent_activity": recent,
-        # Reported problems arrive with Phase 3 (issue reporting). Until then there is nothing to count.
-        "issues": None,
+        # Open issues by severity, how many were resolved this week, and the newest open ones.
+        "issues": issue_service.summary(db),
     }

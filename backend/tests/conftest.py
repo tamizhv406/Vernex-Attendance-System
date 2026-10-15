@@ -30,6 +30,7 @@ from sqlalchemy.orm import sessionmaker
 from app.database import Base
 from app.models.admin_account import AdminAccount, AdminSession
 from app.models.audit_log import AuditLog  # noqa: F401  (its table is created with the others)
+from app.models.issue import Issue
 from app.services import audit_service, auth_service, password_service  # noqa: F401  (audit_service: the face enrollment listener)
 
 PRODUCTION_HASHER = password_service._hasher
@@ -78,9 +79,58 @@ def open_login(db, account):
     return access_token, refresh_token
 
 
+def add_issue(db, reported_by, title="The scanner froze", **fields):
+    """An issue written straight into the table, saved: for a test that needs one to exist, not to report one."""
+    issue = Issue(**{"title": title, "description": "It stopped after the third face.", "category": "bug", "severity": "medium",
+                     "reported_by": reported_by, **fields})
+    db.add(issue)
+    db.commit()
+    db.refresh(issue)
+    return issue
+
+
 @pytest.fixture()
 def make_account():
     return add_account
+
+
+@pytest.fixture()
+def make_issue():
+    return add_issue
+
+
+@pytest.fixture()
+def signed_in(backend):
+    """signed_in(email, role="admin", **fields): a client logged in as a new account of its own.
+    client.account_id is the account's id."""
+    def sign_in(email, role="admin", **fields):
+        with backend.db() as db:
+            account = add_account(db, email, role=role, **fields)
+            token, _refresh = open_login(db, account)
+            account_id = account.id
+        client = backend()
+        client.headers["Authorization"] = f"Bearer {token}"
+        client.account_id = account_id
+        return client
+
+    return sign_in
+
+
+@pytest.fixture()
+def audit_breaks(monkeypatch):
+    """audit_breaks("admin.created", ...): writing those entries fails, as it would on a full disk."""
+    from sqlalchemy.exc import OperationalError
+
+    writing = audit_service.record
+
+    def for_actions(*actions):
+        def record(db, action, **fields):
+            if action in actions:
+                raise OperationalError("INSERT INTO audit_logs (...) VALUES (...)", {}, Exception("disk I/O error"))
+            return writing(db, action, **fields)
+        monkeypatch.setattr(audit_service, "record", record)
+
+    return for_actions
 
 
 @pytest.fixture()

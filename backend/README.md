@@ -69,6 +69,9 @@ Option 1: Run SQL in Supabase SQL Editor:
 migrations/001_initial_schema.sql
 ```
 
+and then the later migrations in order (`002` to `007`; `007_issues.sql` adds the reported issues
+and their comments). For a new, empty database `migrations/full_schema.sql` is all of them in one file.
+
 Option 2: Use SQLAlchemy:
 
 ```powershell
@@ -128,7 +131,8 @@ Every route needs a login except `GET /health`, `POST /auth/login`, `POST /auth/
 - `GET /auth/me` the logged-in account
 - `POST /auth/change-password` current and new password; ends every login of the account
 - Super admins only (an admin gets `403`):
-  - `GET /super-admin/dashboard` account counts, today's attendance, the newest audit entries
+  - `GET /super-admin/dashboard` account counts, today's attendance, the newest audit entries, open
+    issues by severity, issues resolved this week (Monday to Sunday) and the five newest open issues
   - `GET /super-admin/admins?search=&status=&role=`, `POST /super-admin/admins` (email, full_name,
     role; answered with a temporary password, once)
   - `GET|PUT /super-admin/admins/{id}` (email, full_name, role)
@@ -137,6 +141,29 @@ Every route needs a login except `GET /health`, `POST /auth/login`, `POST /auth/
     that is or was one is reset with `scripts/create_super_admin.py --force`)
   - `GET /super-admin/audit-logs?actor_id=&action=&target_type=&date_from=&date_to=&page=&page_size=`,
     `GET /super-admin/audit-logs/actions`. There is no route that changes or deletes an entry.
+  - `GET /super-admin/issues?status=&severity=&category=&reporter_id=&date_from=&date_to=&sort=&page=&page_size=`
+    every reported issue. `status` is one status or `unresolved` (open and in progress); `sort` is
+    `newest` or `severity`; the dates are days in the school's time zone
+  - `GET /super-admin/issues/open-count` how many are open or in progress (the portal's badge)
+  - `GET /super-admin/issues/{id}` one issue with its comments
+  - `PUT /super-admin/issues/{id}` any of `status`, `resolution_note`, `assigned_to`. Resolving needs
+    a note; `assigned_to` is an active super admin or `null`. A change of status is written to the
+    audit log together with it
+  - `POST /super-admin/issues/{id}/comments` (`body`); `409` on a closed issue
+- Issues, for any account that is logged in, about its own issues only (someone else's is `404`, the
+  same as a number that does not exist):
+  - `POST /issues` title (5 to 120 characters), description (10 to 4000), category (`bug`,
+    `face_recognition`, `attendance_data`, `camera_device`, `login_access`, `other`), severity (`low`,
+    `medium`, `high`, `critical`), `page_url` (a path inside the console, like `/dashboard`) and
+    `device_info` (`browser`, `os`, `screen`, up to 100 characters each). Anything else, such as who
+    reported it or a status, is refused (`422`). Written to the audit log together with it
+  - `GET /issues?status=&page=&page_size=`, `GET /issues/{id}` (with its comments; the resolution
+    note once it is resolved)
+  - `POST /issues/{id}/comments` (`body`, 1 to 4000 characters); `409` on a closed issue
+  - No route deletes an issue or changes or deletes a comment. A refused request on `/issues` (like
+    `/auth` and `/super-admin`) says what is wrong without repeating what was sent
+- Paged lists (`/issues`, `/super-admin/issues`, `/super-admin/audit-logs`): `page` is 1 to 10,000 and
+  `page_size` 1 to 100 (`app/routes/paging.py`); anything else is refused with `422`
 - `GET /`
 - `GET /health`, `GET /health/details` (database and face models; needs a login)
 - `GET /courses`, `POST /courses/create`, `GET|PUT|DELETE /courses/{course_id}`

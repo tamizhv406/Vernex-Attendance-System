@@ -11,14 +11,17 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.database import get_db
+from app.routes.issue_routes import IssueId, refuse_issue
+from app.routes.paging import PageNumber, PageSize
 from app.schemas.admin_schema import AdminCreate, AdminUpdate
+from app.schemas.issue_schema import LARGEST_ID, CommentCreate, IssueUpdate
 from app.security import refuse, require_super_admin
-from app.serializers import managed_account_data
-from app.services import admin_service, audit_service, auth_service
+from app.serializers import issue_comment_data, issue_data, issue_row_data, managed_account_data
+from app.services import admin_service, audit_service, auth_service, issue_service
 from app.services.auth_service import Actor, AuthError
+from app.services.issue_service import IssueError
 
 router = APIRouter(prefix="/super-admin", tags=["Super Admin"])
-MAX_PAGE_SIZE = 100
 
 
 def ok(message, data=None):
@@ -113,8 +116,7 @@ def reset_admin_password(account_id: int, response: Response, actor: Actor = Dep
 
 @router.get("/audit-logs")
 def audit_logs(actor_id: int | None = None, action: str | None = None, target_type: str | None = None,
-               date_from: date | None = None, date_to: date | None = None,
-               page: int = Query(1, ge=1), page_size: int = Query(25, ge=1, le=MAX_PAGE_SIZE),
+               date_from: date | None = None, date_to: date | None = None, page: PageNumber = 1, page_size: PageSize = 25,
                _actor: Actor = Depends(require_super_admin), db: Session = Depends(get_db)):
     if action and action not in audit_service.ACTIONS:
         raise refuse(AuthError(400, "Unknown action."))
@@ -134,3 +136,60 @@ def audit_logs(actor_id: int | None = None, action: str | None = None, target_ty
 @router.get("/audit-logs/actions")
 def audit_actions(_actor: Actor = Depends(require_super_admin)):
     return ok("Actions fetched", [{"action": action, "label": label} for action, label in audit_service.ACTIONS.items()])
+
+
+# ---- the issues inbox (IR-03) -------------------------------------------------------------------
+
+@router.get("/issues")
+def issue_inbox(status: str | None = None, severity: str | None = None, category: str | None = None,
+                reporter_id: int | None = Query(None, ge=1, le=LARGEST_ID),
+                date_from: date | None = None, date_to: date | None = None, sort: str = "newest",
+                page: PageNumber = 1, page_size: PageSize = 25,
+                _actor: Actor = Depends(require_super_admin), db: Session = Depends(get_db)):
+    # status: one status, or "unresolved" for open and in progress together. Left out: every status.
+    if date_from and date_to and date_from > date_to:
+        raise refuse(AuthError(400, "The start date must not be after the end date."))
+    try:
+        rows, total = issue_service.inbox(
+            db, status=status, severity=severity, category=category, reporter_id=reporter_id,
+            since=utc_start_of(date_from) if date_from else None,
+            before=utc_start_of(date_to + timedelta(days=1)) if date_to else None,
+            sort=sort, page=page, page_size=page_size,
+        )
+    except IssueError as error:
+        raise refuse_issue(error)
+    return ok("Issues fetched", {"items": [issue_row_data(issue) for issue in rows], "total": total, "page": page, "page_size": page_size})
+
+
+# Before "/issues/{issue_id}", which would otherwise take "open-count" for an issue's number.
+@router.get("/issues/open-count")
+def open_issue_count(_actor: Actor = Depends(require_super_admin), db: Session = Depends(get_db)):
+    # The badge in the portal's navigation: issues that are open or in progress.
+    return ok("Open issues counted", {"count": issue_service.open_count(db)})
+
+
+@router.get("/issues/{issue_id}")
+def get_issue(issue_id: IssueId, _actor: Actor = Depends(require_super_admin), db: Session = Depends(get_db)):
+    try:
+        issue = issue_service.find(db, issue_id)
+    except IssueError as error:
+        raise refuse_issue(error)
+    return ok("Issue fetched", issue_data(issue, issue_service.comments_of(db, issue)))
+
+
+@router.put("/issues/{issue_id}")
+def update_issue(issue_id: IssueId, payload: IssueUpdate, actor: Actor = Depends(require_super_admin), db: Session = Depends(get_db)):
+    try:
+        issue = issue_service.update(db, actor, issue_id, **payload.model_dump(exclude_unset=True))
+    except IssueError as error:
+        raise refuse_issue(error)
+    return ok("Issue updated", issue_data(issue, issue_service.comments_of(db, issue)))
+
+
+@router.post("/issues/{issue_id}/comments")
+def comment_on_issue(issue_id: IssueId, payload: CommentCreate, actor: Actor = Depends(require_super_admin), db: Session = Depends(get_db)):
+    try:
+        comment = issue_service.comment(db, actor, issue_id, payload.body)
+    except IssueError as error:
+        raise refuse_issue(error)
+    return ok("Comment added", issue_comment_data(comment))

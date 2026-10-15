@@ -1,6 +1,7 @@
 // The Super Admin portal's rules, kept apart from the screens so that they can be tested
 // (portal.test.js). The backend checks all of this again; these only keep the screens from offering
 // what would be refused, and say why.
+import { CATEGORY_OPTIONS, SEVERITY_OPTIONS, STATUS_OPTIONS } from "./issues.js";
 
 export const ROLE_OPTIONS = [
   { value: "admin", label: "Admin" },
@@ -165,11 +166,14 @@ const FIELD_WORDS = {
   email: "Email", full_name: "Name", role: "Role", reason: "Reason", status: "Status", previous_status: "Was",
   person_code: "ID", person_type: "Type", course_code: "Code", course_name: "Course", batch_name: "Batch",
   course_id: "Course", person_id: "Person", session_id: "Session", method: "Method", kind: "File of",
-  total_rows: "Rows", imported: "Imported", skipped: "Skipped", steps: "Poses", steps_done: "Poses done", via: "Via"
+  total_rows: "Rows", imported: "Imported", skipped: "Skipped", steps: "Poses", steps_done: "Poses done", via: "Via",
+  title: "Title", category: "Category", severity: "Severity"
 };
 const VALUE_WORDS = {
   super_admin: "Super admin", admin: "Admin", wrong_password: "Wrong password", unknown_email: "Unknown email",
-  locked: "Locked out", disabled: "Account disabled", expired_temporary_password: "Temporary password expired", student: "Student", member: "Member"
+  locked: "Locked out", disabled: "Account disabled", expired_temporary_password: "Temporary password expired", student: "Student", member: "Member",
+  // An issue's category, severity and status, as the issue pages name them.
+  ...Object.fromEntries([...CATEGORY_OPTIONS, ...SEVERITY_OPTIONS, ...STATUS_OPTIONS].map(option => [option.value, option.label]))
 };
 
 function shown(value) {
@@ -188,7 +192,7 @@ export function detailLines(details) {
 }
 
 // What an entry was about: the name the backend found, or the kind of thing and its number.
-const TARGET_WORDS = { admin_account: "Account", person: "Person", course: "Course", batch: "Batch", attendance_record: "Attendance record" };
+const TARGET_WORDS = { admin_account: "Account", person: "Person", course: "Course", batch: "Batch", attendance_record: "Attendance record", issue: "Issue" };
 
 export function targetText(entry) {
   if (entry.target_label) return entry.target_label;

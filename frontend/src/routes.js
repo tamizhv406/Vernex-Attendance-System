@@ -1,4 +1,4 @@
-import { ArrowLeft, BarChart3, BookOpen, GraduationCap, History, KeyRound, Layers3, LayoutDashboard, MessageSquareWarning, ScanFace, ScanLine, Settings, ShieldCheck, UserCheck, UserCog, Users } from "lucide-react";
+import { ArrowLeft, BarChart3, BookOpen, GraduationCap, History, KeyRound, Layers3, LayoutDashboard, LifeBuoy, MessageSquareWarning, ScanFace, ScanLine, Settings, ShieldCheck, UserCheck, UserCog, Users } from "lucide-react";
 import { visibleGroups } from "./lib/auth.js";
 
 // The URLs are the ones the app already used; only how they are presented changed.
@@ -18,10 +18,32 @@ export const ROUTES = {
   enrollment: "/face-enrollment",
   scanner: "/attendance-scanner",
   reports: "/reports",
+  myReports: "/my-reports",
   settings: "/settings"
 };
 
 export const PATH_TO_PAGE = Object.fromEntries(Object.entries(ROUTES).map(([page, path]) => [path, page]));
+
+// Pages that also show one issue at an address of its own: /my-reports/12, /super-admin/issues/12.
+export const ISSUE_PAGES = ["myReports", "portalIssues"];
+const ISSUE_NUMBER = /^[1-9]\d{0,8}$/;
+
+// { page, issueId } for an address. An address that is no page is "home": the account's own start page.
+export function locationView(pathname) {
+  const page = PATH_TO_PAGE[pathname];
+  if (page) return { page, issueId: null };
+  for (const id of ISSUE_PAGES) {
+    const prefix = `${ROUTES[id]}/`;
+    const rest = pathname.startsWith(prefix) ? pathname.slice(prefix.length) : "";
+    if (ISSUE_NUMBER.test(rest)) return { page: id, issueId: Number(rest) };
+  }
+  return { page: "home", issueId: null };
+}
+
+export function pathFor(page, issueId = null) {
+  const base = ROUTES[page] || ROUTES.dashboard;
+  return issueId && ISSUE_PAGES.includes(page) ? `${base}/${issueId}` : base;
+}
 
 // A page with "roles" opens for those roles only; one without opens for anyone who is logged in.
 // The backend decides who may do what; this only keeps people from pages that would refuse them.
@@ -42,6 +64,7 @@ export const PAGES = {
   members: { label: "Members", title: "Members", subtitle: "Members kept alongside students.", icon: Users },
   courses: { label: "Courses", title: "Courses", subtitle: "Create a course before its batches and students.", icon: BookOpen },
   batches: { label: "Batches", title: "Batches", subtitle: "Every batch belongs to one course.", icon: Layers3 },
+  myReports: { label: "My reports", title: "My reports", subtitle: "Problems you reported, and the answers to them.", icon: LifeBuoy },
   settings: { label: "Settings", title: "Settings", subtitle: "Connection and system status.", icon: Settings }
 };
 
@@ -50,7 +73,7 @@ export const NAV_GROUPS = [
   { label: "Overview", items: ["dashboard"] },
   { label: "Manage", items: ["courses", "batches", "students", "staff", "members"] },
   { label: "Attendance", items: ["enrollment", "scanner", "reports"] },
-  { label: "System", items: ["settings"] }
+  { label: "System", items: ["myReports", "settings"] }
 ];
 
 // The portal's own navigation, with the way back to the console last.
