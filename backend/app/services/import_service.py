@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from app.models.course import Course, CourseBatch
 from app.models.person import Person
 from app.schemas.person_schema import PersonCreate
-from app.services import course_service
+from app.services import audit_service, course_service
 from app.services.person_service import build_person, person_with_code
 from app.utils.spreadsheet import (
     CSV_MEDIA_TYPE, MAX_DATA_ROWS, MAX_FILE_BYTES, XLSX_MEDIA_TYPE, ImportFileError, Sheet, build_csv, build_template,
@@ -207,7 +207,6 @@ def run_import(db: Session, spec: ImportSpec, sheet: Sheet):
         drafts.append(Draft(row.number, values, checked.fields, problems))
 
     refused = _save(db, plan, [draft for draft in drafts if not draft.problems])
-    db.commit()
 
     errors, skipped_rows = [], []
     for draft in drafts:
@@ -216,6 +215,11 @@ def run_import(db: Session, spec: ImportSpec, sheet: Sheet):
             continue
         skipped_rows.append({"row": draft.number, "values": draft.values})
         errors.extend({"row": draft.number, "column": column, "value": draft.values.get(column, ""), "message": message} for column, message in problems)
+    # The upload goes into the audit log in the same commit as its rows, so there is never one
+    # without the other. Counts only: the rows are people's names and numbers, and the file's name
+    # is whatever it was called.
+    audit_service.record(db, "import.uploaded", details={"kind": spec.key, "total_rows": len(drafts), "imported": len(drafts) - len(skipped_rows), "skipped": len(skipped_rows)})
+    db.commit()
     return {
         "entity": spec.key,
         "total_rows": len(drafts),

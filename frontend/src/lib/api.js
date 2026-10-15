@@ -1,19 +1,43 @@
+import { createSession } from "./auth";
+
 // "/api" is proxied to FastAPI by Vite, so a phone on the same Wi-Fi reaches the backend through this origin.
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || "/api").replace(/\/$/, "");
 
-async function request(path, options = {}) {
-  const isFormData = options.body instanceof FormData;
+// One exchange with the backend. A refusal is an answer like any other; only a server that cannot
+// be reached makes this reject. The body goes out as JSON unless it is a form (a file, a camera frame).
+async function send(path, { token, body, headers, ...options } = {}) {
+  const isFormData = body instanceof FormData;
   const response = await fetch(`${API_BASE_URL}${path}`, {
     ...options,
+    body: body === undefined || isFormData || typeof body === "string" ? body : JSON.stringify(body),
+    // The refresh cookie has to travel with the auth requests, also when the backend is on another origin.
+    credentials: "include",
     headers: {
       ...(isFormData ? {} : { "Content-Type": "application/json" }),
-      ...(options.headers || {})
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(headers || {})
     }
   });
+  return { status: response.status, json: () => response.json().catch(() => ({})), blob: () => response.blob() };
+}
 
-  const payload = await response.json().catch(() => ({}));
+// Whether this browser was signed in when it was last used. A yes/no and nothing else: the tokens
+// themselves are never written anywhere the page can read them back from.
+const SIGNED_IN_HINT = "vx_session";
+const hint = {
+  get() { try { return localStorage.getItem(SIGNED_IN_HINT) === "yes"; } catch { return true; } },
+  set(signedIn) { try { signedIn ? localStorage.setItem(SIGNED_IN_HINT, "yes") : localStorage.removeItem(SIGNED_IN_HINT); } catch { /* private mode: every load simply asks the backend */ } }
+};
+// What the page used to keep before there were real logins. It opens nothing now; it is just removed.
+try { localStorage.removeItem("vx_auth"); } catch { /* nothing to remove */ }
 
-  if (!response.ok || payload.success === false) throw apiError(payload, response.status);
+export const session = createSession({ send, remember: hint });
+
+async function request(path, options = {}) {
+  const answer = await session.call(path, options);
+  const payload = await answer.json();
+
+  if (answer.status < 200 || answer.status > 299 || payload.success === false) throw apiError(payload, answer.status);
 
   return payload.data ?? payload;
 }
@@ -103,9 +127,9 @@ export function uploadImport(path, file) {
 
 // A file from the backend (an import template) as a Blob. A refusal arrives as JSON and is thrown like any other.
 export async function downloadFile(path) {
-  const response = await fetch(`${API_BASE_URL}${path}`);
-  if (!response.ok) throw apiError(await response.json().catch(() => ({})), response.status);
-  return response.blob();
+  const answer = await session.call(path);
+  if (answer.status !== 200) throw apiError(await answer.json(), answer.status);
+  return answer.blob();
 }
 
 export function getTimings() {
@@ -161,8 +185,49 @@ export function recognizeFace(formData) {
   return request("/face/recognize", { method: "POST", body: formData });
 }
 
+// The database and face-model state, for someone who is logged in. (The public /health says one word.)
 export function getHealth() {
-  return request("/health");
+  return request("/health/details");
+}
+
+// ---- the Super Admin portal (the backend refuses all of these to an admin) ----------------------
+
+export function getPortalDashboard() {
+  return request("/super-admin/dashboard");
+}
+
+export function getAdmins(filters = {}) {
+  return request(`/super-admin/admins${queryString(filters)}`);
+}
+
+// Resolves to { account, temporary_password }. The password is in this one answer only.
+export function createAdmin(data) {
+  return request("/super-admin/admins", { method: "POST", body: JSON.stringify(data) });
+}
+
+export function updateAdmin(id, data) {
+  return request(`/super-admin/admins/${id}`, { method: "PUT", body: JSON.stringify(data) });
+}
+
+export function disableAdmin(id) {
+  return request(`/super-admin/admins/${id}/disable`, { method: "POST" });
+}
+
+export function enableAdmin(id) {
+  return request(`/super-admin/admins/${id}/enable`, { method: "POST" });
+}
+
+// Resolves to { account, temporary_password }, like createAdmin.
+export function resetAdminPassword(id) {
+  return request(`/super-admin/admins/${id}/reset-password`, { method: "POST" });
+}
+
+export function getAuditLogs(query = {}) {
+  return request(`/super-admin/audit-logs${queryString(query)}`);
+}
+
+export function getAuditActions() {
+  return request("/super-admin/audit-logs/actions");
 }
 
 export { API_BASE_URL };

@@ -23,7 +23,6 @@ Create `backend/.env` (never committed):
 
 ```env
 DATABASE_URL=postgresql://postgres.PROJECT_REF:ENCODED_PASSWORD@aws-0-REGION.pooler.supabase.com:6543/postgres
-FRONTEND_ORIGIN=http://localhost:5173
 DEFAULT_TIMEZONE=Asia/Kolkata
 ```
 
@@ -31,12 +30,16 @@ Copy the host from Supabase → Connect → Transaction pooler; the region must 
 In the password, write `@` as `%40` and `%` as `%25`. Without `DATABASE_URL` the app uses a local SQLite file.
 
 ```powershell
+python scripts/create_jwt_secret.py          # writes JWT_SECRET into backend/.env without showing it
 python scripts/test_supabase_connection.py   # should print "connection successful"
+python scripts/create_super_admin.py         # asks for an email, a name and a password: the first login
 uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
 Tables are created automatically on startup. Wait for `face models ready` in the log (about 30 seconds;
-the first ever start also downloads ~100 MB of model weights). Check http://localhost:8000/health.
+the first ever start also downloads ~100 MB of model weights). http://localhost:8000/health answers
+`"status":"starting"` until then and `"status":"ok"` after. The backend refuses to start without a
+`JWT_SECRET`, and nobody can log in before a super admin exists: see "Logging in and accounts".
 
 ### 2. Frontend (second terminal)
 
@@ -58,6 +61,133 @@ use the one that starts with your Wi-Fi address, for example `https://192.168.1.
 If the page does not load: confirm both devices are on the same Wi-Fi, and allow Node.js through
 Windows Firewall for your network type. The phone only talks to the frontend; Vite forwards `/api`
 calls to the backend, so port 8000 does not need to be reachable from the phone.
+
+## Logging in and accounts
+
+Every page and every API route needs a login. The accounts that can log in are kept in their own
+table, `admin_accounts`. They are **not** the people under Staff: in `user_management`,
+`person_type='admin'` means a staff member whose attendance is taken, and such a row opens nothing.
+
+There are two roles. An **admin** uses the console (courses, batches, people, enrollment, scanner,
+reports); a phone that runs the scanner logs in as one. A **super admin** can do the same and lands
+on the **Super Admin portal** (`/super-admin`), where the admin accounts are managed and the audit
+log is read: see "The Super Admin portal" below. The first super admin is made with the script below;
+every other account is best created in the portal.
+
+### The first super admin
+
+There is no default account and no default password. Create the first login on the machine that
+runs the backend, after `DATABASE_URL` points at the database you will use:
+
+```powershell
+cd backend
+.venv\Scripts\python scripts\create_super_admin.py
+```
+
+It says which database it will write to, then asks for the email, the name and the password. The
+password is typed hidden, twice, and cannot be passed on the command line, in a file or through a
+pipe. If a super admin already exists it changes nothing and says so. With `--force` it goes on:
+
+- for a **new email** it adds another super admin;
+- for an email that **is already a super admin** it asks you to type the email again, and then
+  replaces that account's password, unlocks and enables it, and logs it out on every device. This
+  is how a forgotten password or a locked-out super admin is recovered;
+- for an admin that **was a super admin before** it does the same, and the account stays an admin.
+  The portal never resets such an account's password (see "The Super Admin portal"), so this is its
+  way back in;
+- for the email of an admin that has never been a super admin it refuses: its password is reset in
+  the portal.
+
+### Passwords, lockout and sessions
+
+- A password has at least 10 characters (128 at most), is not the account's email, and is not one
+  of the commonly used ones in `backend/app/data/common_passwords.txt`. It is stored as an Argon2id
+  hash and never written to a log.
+- Five wrong passwords in a row lock an email for 15 minutes; the right password does not open it
+  during that time. One device gets ten login attempts a minute. A wrong password and an email
+  that has no account get exactly the same answers, lock included.
+- Logging in gives the browser an access token that lasts 15 minutes and is kept in memory only,
+  and a refresh cookie that lasts 7 days and that scripts cannot read (`HttpOnly`, `Secure`,
+  `SameSite=Strict`). The page renews the access token by itself; reloading the page keeps you
+  logged in; **Log out** ends that device's session at once. Only a hash of the refresh token is stored.
+- **Settings → Change password** asks for the current password and logs the account out on every
+  device. An account with a temporary password sees nothing but that form until it has been used.
+- Because the cookie is `Secure`, log in through the `https://` links (the ones the camera needs
+  anyway). On the PC itself `http://localhost:5173` also works in Chrome, Edge and Firefox.
+- Renewing and logging out work on the cookie alone, so the backend accepts them only from the
+  console: the request must carry the header `X-Requested-With: vernex`, which the console sends and
+  a page on another site or another port of this machine cannot add. Such a request is refused with
+  `403` and the login is left as it was.
+
+### The Super Admin portal
+
+Super admins only: an admin who types one of its addresses sees "Not allowed", and the backend
+answers every `/super-admin/...` request from an admin with `403`. It has its own navigation
+(Dashboard, Admins, Issues, Audit Log, and Back to console) on a computer and on a phone.
+
+- **Dashboard**: active, disabled and locked-out accounts, accounts still on a temporary password,
+  today's attendance totals and the newest audit entries, all counted from the database.
+- **Admins**: search by name or email, filter by status and role, add, edit, disable, enable and
+  reset a password.
+  - A new account and a reset get a **temporary password**, generated by the backend and shown to
+    the super admin once. It is not stored anywhere readable, and the person must replace it at
+    their first login. A super admin never chooses or sees anyone's own password.
+  - A temporary password works for **72 hours**. After that it opens nothing, a login made with it
+    ends, and the person is told how to get a new one ("This temporary password has expired..."); the
+    Admins list marks it as expired. For an admin, a reset gives a new one for 72 hours. An account
+    that is or has been a super admin (also one just created in the portal) cannot be reset here:
+    whoever runs the backend sets a new password with `create_super_admin.py --force`. A password
+    the person chose has no such limit, and neither has one typed on the server with `create_super_admin.py`.
+  - Disabling an account or resetting its password logs it out on every device at once. So does a
+    new role, so that the account comes back with the pages of that role. A reset leaves a disabled
+    account disabled.
+  - Nobody can disable themself, change their own role, or reset their own password here (Settings
+    has Change password). The last active super admin cannot be disabled or demoted, also when two
+    super admins try it at the same moment.
+  - **Only the password of an admin that has never been a super admin is reset here.** Whoever
+    resets a password is shown the new one and could log in with it first, which would let one super
+    admin act under another's name. So every account that is or has ever been a super admin is marked
+    for good (`has_been_super_admin`), and the portal refuses to reset its password, also after it
+    was made an admin: taking the role away first is no way into someone's account. Such an account
+    is recovered on the server: `backend\.venv\Scripts\python backend\scripts\create_super_admin.py --force`,
+    type that account's email twice, then the new password (see "The first super admin"). A super
+    admin stays a super admin and a former one stays an admin. It is written to the audit log as done
+    on the command line. The Admins list switches the Reset button off for these accounts and says why.
+  - Two super admins adding the same email at the same moment get one account; the other is told
+    the email is taken (`409`), and nothing of their attempt is kept.
+- **Issues**: a placeholder until issue reporting is built.
+- **Audit Log**: who did what and when, newest first, filtered by person, action and days, 25 to a
+  page. Recorded: logins (and failed logins, without the email that was typed), logouts, password
+  changes, every change to an account, deleted people, courses and batches, attendance marked by hand,
+  face enrollments started, completed or cancelled, bulk uploads, and what `create_super_admin.py`
+  does. No password, token, hash or face data is ever written to it. There is no way to change or
+  delete an entry through the app.
+  - Each action is saved in the same database transaction as its entry: both, or neither. If the
+    entry cannot be written, the action is not saved and the person is told it failed. Two
+    exceptions, on purpose: a **refused login** is still answered as refused (the refusal was
+    decided first), and a **logout** still ends the login. In both cases the backend's log says
+    which entry is missing, without the email or the password.
+  - Searches and filters are sent in the address, and the backend's access log keeps every
+    request's address: it keeps the names of those parameters but replaces their values with
+    `[hidden]`, so an email typed into the search is not written to the log.
+
+### What stays open
+
+Without a login the backend answers only `GET /health` (one word: `ok`, `starting` or `unavailable`)
+and the login routes. Everything else answers `401`. `GET /health/details` (database and face
+models) needs a login. `/docs` and `/openapi.json` are switched off unless `API_DOCS=true` is set in
+`backend/.env`. An error nobody expected is answered with a generic sentence and a reference; what
+went wrong is written to the backend's log under that reference, without the data involved.
+
+### Settings in `backend/.env`
+
+| Setting | Meaning |
+| --- | --- |
+| `JWT_SECRET` | Signs the access tokens. Required, 32 characters or more. `scripts\create_jwt_secret.py` writes a random one without showing it; `setup.bat` runs that. Never commit or share it. To replace it, delete the line, run the script again and restart the backend: the tokens in use stop working at once, and browsers that are logged in get new ones by themselves. |
+| `AUTH_ACCESS_MINUTES`, `AUTH_REFRESH_DAYS` | How long the access token and the session last (15 and 7). |
+| `AUTH_COOKIE_PATH` | The path the browser uses for the auth routes. `/api/auth` (the default) when the frontend forwards `/api` to the backend; `/auth` only if browsers call the backend's address directly. |
+| `FRONTEND_ORIGIN` | Empty by default, and it should stay empty: the console reaches the backend through `/api` on its own address. Set it only if a page on another origin must call the backend directly, to that page's exact address (several are separated by commas), for example `https://console.example.com`. Patterns, `*` and `null` are ignored, because a page that may read the answers could take over the login of anyone who opens it. An older `backend/.env` may still have `FRONTEND_ORIGIN=http://localhost:5173` from the earlier template: remove that line. |
+| `API_DOCS` | `true` serves `/docs` and `/openapi.json`. For your own machine only. |
 
 ## Workflow
 
@@ -196,15 +326,16 @@ accepts a person with no number at all, as it always did; what it refuses is a n
 | `POST /users/upload?person_type=student` (or `admin` for staff, or `member`) | Import people |
 | `GET /courses/upload/template`, `GET /batches/upload/template`, `GET /users/upload/template?person_type=...` | The template; add `format=csv` for a header-only CSV |
 
-The file goes in a multipart form field named `file`:
+The file goes in a multipart form field named `file`. Like the rest of the API these addresses need
+a login: the access token that `POST /auth/login` returns goes in the `Authorization` header.
 
 ```powershell
-curl.exe -F "file=@students.xlsx" "http://localhost:8000/users/upload?person_type=student"
+curl.exe -H "Authorization: Bearer ACCESS_TOKEN" -F "file=@students.xlsx" "http://localhost:8000/users/upload?person_type=student"
 ```
 
 The answer has `total_rows`, `imported`, `skipped`, `errors` (one entry per problem: `row`,
 `column`, `value`, `message`), `skipped_rows` (the skipped rows as they were given), `columns` and
-`ignored_columns`. Like the rest of the API these addresses have no authentication.
+`ignored_columns`.
 
 ## How recognition works
 
@@ -298,8 +429,9 @@ What the challenge does **not** stop:
   out of two, an attacker with a single clip has an even chance; one who can pick between prepared
   clips while watching the instruction can answer it. The passive check is then the only barrier, and
   its strength against screens in your room is unmeasured.
-- A camera feed that is replaced before it reaches the server (virtual camera, or images posted
-  straight to the API, which has no authentication). The server cannot tell such frames from a camera.
+- A camera feed that is replaced before it reaches the server (a virtual camera, or images posted
+  straight to the API). Posting frames now takes a logged-in account, and the record is signed with
+  it (`marked_by`), but the server still cannot tell such frames from a camera.
 - 3D masks and real-time face-swap video.
 
 So: printed photos and photos on phones are stopped by design. Prerecorded video and replayed feeds
@@ -384,7 +516,10 @@ Other limits:
 
 - Identical twins and very similar faces cannot be told apart reliably by any face model. The system
   answers "Unable to verify identity" when it can see the conflict, but twins should be marked by hand.
-- The login page does not verify credentials and the API has no authentication. Use it on a trusted network only.
+- Logging in is real (see "Logging in and accounts"), but the rest of what an open network needs is
+  not done: the frontend is still the development server with a self-signed certificate, the
+  backend accepts browsers from any private-network address, there are no security headers, and
+  port 8000 is reachable directly. Use it on a trusted network only.
 - The models run on the CPU, one frame at a time. More than four scanner frames waiting are answered
   "busy" and skipped (and shown as skipped) instead of queued.
 
@@ -476,6 +611,35 @@ has, keep the full enrollment available and compare: enroll some students each w
   `backend/migrations/004_capture_meta_and_unique_attendance.sql` is the same change as SQL for PostgreSQL.
 - Bulk upload, the contact-number rule and the editing fixes add no table and no column, and change
   no existing row. Numbers saved before the rule existed stay as they are until someone edits them.
+- Logins add two tables, `admin_accounts` and `admin_sessions`, created on start like the others.
+  No existing table or row is changed and no account is created: the tables start empty. On
+  PostgreSQL the start also switches row level security on for both, with no policy, so they cannot
+  be read through Supabase's REST API. `backend/migrations/005_admin_accounts.sql` is the same
+  change as SQL, and `backend/migrations/full_schema.sql` includes it. These have been run on
+  SQLite only; see "Tests".
+- The Super Admin portal adds one table, `audit_logs`, created on start in the same way, empty, with
+  row level security switched on on PostgreSQL. `backend/migrations/006_audit_logs.sql` is the same
+  change as SQL (it needs 005 first), and `full_schema.sql` includes it. Run on SQLite only so far.
+- Temporary passwords that run out add one column, `admin_accounts.temporary_password_expires_at`.
+  On start it is added to an existing table, empty for every account, and nothing else changes:
+  a password given out before this existed keeps working until it is changed. `005_admin_accounts.sql`
+  adds it too (`ADD COLUMN IF NOT EXISTS`), and `full_schema.sql` has it.
+- Accounts that are or have been a super admin add one more column, `admin_accounts.has_been_super_admin`
+  (true or false, false by default). On start it is added to an existing table, and every account that
+  is a super admin at that moment is marked; that marking runs on every start and only ever sets the
+  flag, so it changes nothing more the second time. No other value is touched. `005_admin_accounts.sql`
+  does the same (`ADD COLUMN IF NOT EXISTS`, then the one `UPDATE` that marks the super admins), and
+  `full_schema.sql` has the column.
+- Logins need two more Python packages, `argon2-cffi` and `pyjwt` (both in
+  `backend/requirements.txt`), and a `JWT_SECRET` in `backend/.env`. In an installation made
+  before they were added:
+
+  ```powershell
+  cd backend
+  .venv\Scripts\python -m pip install -r requirements.txt
+  .venv\Scripts\python scripts\create_jwt_secret.py
+  .venv\Scripts\python scripts\create_super_admin.py
+  ```
 - Bulk upload needs one more Python package, `openpyxl`, to read and write `.xlsx` files (and the
   tests need `httpx2`). Both are in `backend/requirements.txt`. In an installation made before
   they were added, install them once:
@@ -505,6 +669,22 @@ through the real routes, each test on its own empty in-memory SQLite database: f
 as a browser uploads them, and what was saved is read back from the database. They have not been
 run against PostgreSQL.
 
+Logins are tested the same way, through the real routes: the right and the wrong password, an
+unknown email, the lockout, a disabled account, an expired and a forged token, renewing and logging
+out, and changing the password. One test walks every route the application has and requires `401`
+without a login for all but the four public ones, so a route added later is covered without a new
+test. The tests set their own database and signing secret: whatever `backend/.env` says, no test
+connects to it. What they cannot show is PostgreSQL itself: that the two tables are created there
+and that row level security is on has to be checked on the real database.
+
+The Super Admin portal is tested the same way (`tests/test_super_admin.py`): each account action and
+its refusals, that a new admin logs in with the temporary password, must change it and then gets the
+console, that disabling and resetting end logins at once, exactly one audit entry for each recorded
+action and none with a secret in it, the audit log's filters and pages, and the dashboard's numbers.
+The walk over every route also requires `403` for an admin on every portal route. Two super admins
+removing each other at the same moment is tested on a SQLite file with real connections; on
+PostgreSQL the same guard uses row locks, which have not been run there.
+
 ```powershell
 cd frontend
 npm test
@@ -512,7 +692,10 @@ npm test
 
 This runs the frontend's rules with Node's own test runner (nothing extra to install): the
 contact-number check, what the Courses and Batches forms do when a record is opened, changed,
-cancelled and saved, and what the upload dialog makes of the backend's answer. Two lists are shared
+cancelled and saved, what the upload dialog makes of the backend's answer, and the session (logging
+in, renewing the token, being sent back to the login page, which page each role may open), and the
+portal's rules (who reaches its pages, what each account screen offers, how long a temporary password
+is held, the audit log's filters and pages). Two lists are shared
 with the backend's tests so that the two sides cannot drift apart: `backend/tests/data/phone_cases.json`
 (numbers and what must become of them) and `backend/tests/data/import_columns.json` (the column names).
 The screens themselves are not covered by automated tests.

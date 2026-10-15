@@ -252,11 +252,10 @@ def test_the_upload_address_is_not_mistaken_for_a_course_id(client):
 
 
 def test_the_upload_addresses_are_described_in_the_api_documentation(client):
-    # /docs is built from this; it also proves that every route of the application still registers.
-    schema = client.get("/openapi.json")
-
-    assert schema.status_code == 200
-    paths = schema.json()["paths"]
+    # /docs is built from this when API_DOCS is on; it also proves that every route of the
+    # application still registers. The address /openapi.json itself is switched off by default.
+    assert client.get("/openapi.json").status_code == 404
+    paths = client.app.openapi()["paths"]
     for path in ("/courses/upload", "/batches/upload", "/users/upload"):
         assert "multipart/form-data" in paths[path]["post"]["requestBody"]["content"], path
         assert "get" in paths[f"{path}/template"], path

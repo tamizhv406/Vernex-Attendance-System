@@ -1,10 +1,11 @@
 import React, { useEffect, useState } from "react";
-import { Activity, LogOut, RefreshCw } from "lucide-react";
+import { Activity, KeyRound, LogOut, RefreshCw } from "lucide-react";
 import { API_BASE_URL, getHealth } from "../lib/api";
+import { ROLE_LABELS } from "../lib/auth";
 import { Button, Card, Info, Page, Spinner, StatusBadge } from "../ui";
 
-export default function SettingsPage({ data, logout }) {
-  // The health check is a real request to the backend's /health endpoint.
+export default function SettingsPage({ data, logout, account, setPage }) {
+  // The health check is a real request to the backend's /health/details endpoint (logged-in accounts only).
   const [health, setHealth] = useState({ state: "checking" });
   const check = async () => {
     setHealth({ state: "checking" });
@@ -48,9 +49,17 @@ export default function SettingsPage({ data, logout }) {
         </ol>
       </Card>
 
-      <Card title="This device" subtitle="Signing out only affects this browser.">
-        <p className="text-sm text-ink-muted">The camera needs an HTTPS address. On a phone, open the https link shown when the frontend starts and accept the certificate warning.</p>
-        <Button variant="outline" className="mt-5 hover:border-red-200 hover:bg-red-50 hover:text-red-600" icon={LogOut} onClick={logout}>Log out</Button>
+      <Card title="Your account" subtitle="Logging out only affects this device. Changing the password logs the account out everywhere.">
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Info label="Name" value={account.full_name} />
+          <Info label="Role" value={ROLE_LABELS[account.role] || account.role} />
+          <Info label="Email" value={account.email} />
+        </div>
+        <p className="mt-4 text-sm text-ink-muted">The camera needs an HTTPS address. On a phone, open the https link shown when the frontend starts and accept the certificate warning.</p>
+        <div className="mt-5 flex flex-wrap gap-2">
+          <Button variant="outline" icon={KeyRound} onClick={() => setPage("changePassword")}>Change password</Button>
+          <Button variant="outline" className="hover:border-red-200 hover:bg-red-50 hover:text-red-600" icon={LogOut} onClick={logout}>Log out</Button>
+        </div>
       </Card>
     </div>
   </Page>;

@@ -7,6 +7,65 @@ def iso(value):
     return value
 
 
+def utc_iso(value):
+    # The login tables and the audit log hold UTC without a time zone. Said so with a "Z", so that a
+    # browser shows the time in its own zone instead of taking it for local time.
+    if isinstance(value, datetime):
+        return value.replace(tzinfo=None).isoformat() + "Z"
+    return iso(value)
+
+
+def admin_account_data(account):
+    # What the console may know about a login account. Never the password hash, and not the
+    # failed-login count or the lock time either, which would tell a guesser how far along they are.
+    return {
+        "id": account.id,
+        "email": account.email,
+        "full_name": account.full_name,
+        "role": account.role,
+        "status": account.status,
+        "must_change_password": bool(account.must_change_password),
+        "last_login_at": utc_iso(account.last_login_at),
+        "created_at": utc_iso(account.created_at),
+        "updated_at": utc_iso(account.updated_at),
+    }
+
+
+def managed_account_data(account, now):
+    # What a super admin sees of an account they manage: the above, whether it is locked out now,
+    # when its temporary password stops working, and who created it. Still never the hash, and not
+    # the count of wrong passwords.
+    locked = bool(account.locked_until and account.locked_until > now)
+    expires = account.temporary_password_expires_at if account.must_change_password else None
+    return dict(
+        admin_account_data(account),
+        locked=locked,
+        locked_until=utc_iso(account.locked_until) if locked else None,
+        temporary_password_expires_at=utc_iso(expires),
+        temporary_password_expired=bool(expires and now >= expires),
+        # Its password is reset on the server only (it is or has been a super admin).
+        has_been_super_admin=bool(account.has_been_super_admin or account.role == "super_admin"),
+        created_by=account.created_by,
+    )
+
+
+def audit_log_data(entry, actor=None, target_label=None, action_label=None):
+    return {
+        "id": entry.id,
+        "created_at": utc_iso(entry.created_at),
+        "action": entry.action,
+        "action_label": action_label or entry.action,
+        "actor": {"id": actor.id, "email": actor.email, "full_name": actor.full_name} if actor else None,
+        "actor_id": entry.actor_id,
+        "target_type": entry.target_type,
+        "target_id": entry.target_id,
+        "target_label": target_label,
+        "details": entry.details or {},
+        "ip": entry.ip,
+        "user_agent": entry.user_agent,
+    }
+
+
 def course_data(course):
     return {
         "id": course.id,

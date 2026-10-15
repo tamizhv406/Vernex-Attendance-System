@@ -5,11 +5,13 @@ from app.database import get_db
 from app.models.attendance import AttendanceRecord, AttendanceSession
 from app.models.course import Course, CourseBatch
 from app.schemas.attendance_schema import AttendanceMark, AttendanceSessionCreate
-from app.services.attendance_service import mark_attendance
+from app.services.attendance_service import audit_marked, mark_attendance
 from app.serializers import attendance_record_data, attendance_session_data
 from app.utils.time_utils import today_local
 
 router = APIRouter(prefix="/attendance", tags=["Attendance"])
+# What mark_attendance says when it wrote a new record (otherwise "Already marked" or why not).
+MARKED = "Attendance marked"
 
 
 @router.post("/session/start")
@@ -63,9 +65,13 @@ def complete_session(session_id: int, db: Session = Depends(get_db)):
     return {"success": True, "message": "Session completed", "data": attendance_session_data(item)}
 
 
+# These two routes are attendance marked by hand; the scanner marks through /face/recognize. A new
+# record is written to the audit log in the same commit as the record (by_hand), and a record that
+# is changed here in the same commit as the change.
+
 @router.post("/mark")
 def mark(payload: AttendanceMark, db: Session = Depends(get_db)):
-    record, message = mark_attendance(db, payload)
+    record, message = mark_attendance(db, payload, by_hand=True)
     if not record:
         raise HTTPException(404, message)
     return {"success": True, "message": message, "data": attendance_record_data(record)}
@@ -74,9 +80,13 @@ def mark(payload: AttendanceMark, db: Session = Depends(get_db)):
 @router.post("/mark-absent")
 def mark_absent(payload: AttendanceMark, db: Session = Depends(get_db)):
     payload.recognition_method = "auto_absent"
-    record, message = mark_attendance(db, payload)
-    if record:
+    record, message = mark_attendance(db, payload, by_hand=True)
+    if record and message != MARKED and record.status != "absent":
+        # One that said something else until now. A new record is absent already (and recorded),
+        # and marking absent again changes nothing.
+        before = record.status
         record.status = "absent"
+        audit_marked(db, record, before)
         db.commit()
         db.refresh(record)
     return {"success": bool(record), "message": message, "data": attendance_record_data(record) if record else None}

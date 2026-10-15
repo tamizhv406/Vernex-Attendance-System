@@ -8,7 +8,7 @@ from app.models.course import Course, CourseBatch
 from app.models.person import Person
 from app.schemas.course_schema import BatchCreate, BatchUpdate, CourseCreate, CourseUpdate
 from app.serializers import batch_data, course_data
-from app.services import course_service
+from app.services import audit_service, course_service
 from app.utils.validation import FieldError
 
 router = APIRouter(tags=["Courses and Batches"])
@@ -127,6 +127,8 @@ def delete_course(course_id: int, db: Session = Depends(get_db)):
         raise HTTPException(409, "Delete batches under this course first")
     course = db.get(Course, course_id)
     db.delete(course)
+    audit_service.record(db, "course.deleted", target_type="course", target_id=course.id,
+                         details={"course_code": course.course_code, "course_name": course.course_name})
     db.commit()
     return ok("Course deleted")
 
@@ -218,5 +220,7 @@ def delete_batch(batch_id: int, db: Session = Depends(get_db)):
         raise HTTPException(409, "Batch has attendance records and cannot be deleted")
     batch = db.get(CourseBatch, batch_id)
     db.delete(batch)
+    audit_service.record(db, "batch.deleted", target_type="batch", target_id=batch.id,
+                         details={"batch_name": batch.batch_name, "course_id": batch.course_id})
     db.commit()
     return ok("Batch deleted")

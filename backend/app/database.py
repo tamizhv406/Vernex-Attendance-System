@@ -18,7 +18,9 @@ def clean_database_url(raw_url: str) -> str:
 
 DATABASE_URL = clean_database_url(settings.database_url)
 connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {"connect_timeout": 10}
-engine = create_engine(DATABASE_URL, connect_args=connect_args, pool_pre_ping=True)
+# hide_parameters: a database error names the statement that failed but never the values that were
+# in it. Those values are people's names and numbers and, for the login tables, password hashes.
+engine = create_engine(DATABASE_URL, connect_args=connect_args, pool_pre_ping=True, hide_parameters=True)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 

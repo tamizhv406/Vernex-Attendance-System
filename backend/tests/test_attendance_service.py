@@ -208,3 +208,90 @@ def test_existing_duplicates_are_reported_not_deleted(tmp_path, capsys):
         assert connection.execute(text("SELECT COUNT(*) FROM attendance_records")).scalar() == 2
     assert "NOT created" in capsys.readouterr().out
     engine.dispose()
+
+
+# ---- marking by hand, through the routes, for each kind of session ------------------------------
+# recognition_method "auto_absent" means absent: /attendance/mark-absent sets it, and a record marked
+# with it is absent in every kind of session, a member visit included. Every other method follows
+# the session (a member visit is "visited", a class is "present", or "late"/"absent" by its times).
+
+RECORD_FIELDS = {
+    "id", "session_id", "person_id", "person_code", "person_name", "person_type", "course_id", "batch_id", "category_program",
+    "batch_name", "level_class", "attendance_date", "marked_time", "status", "confidence_score", "recognition_method",
+    "device_name", "marked_by", "duplicate_flag", "sync_status", "notes", "created_at", "updated_at",
+}
+
+
+@pytest.fixture()
+def visit(client):
+    def make(session_type):
+        from app.utils.time_utils import today_local
+
+        with client.db() as db:
+            # A member: no course or batch to match. No grace or end time: nothing makes it late.
+            member = Person(person_code="MEM-1", full_name="Sample Member", person_type="member")
+            session = AttendanceSession(session_name="Visit", session_type=session_type, session_date=today_local(), status="active")
+            db.add_all([member, session])
+            db.commit()
+            return {"session_id": session.id, "person_id": member.id}
+    return make
+
+
+def stored_records(client):
+    with client.db() as db:
+        return [(record.status, record.recognition_method) for record in db.query(AttendanceRecord)]
+
+
+@pytest.mark.parametrize("session_type, route, method, status, saved_method", [
+    ("regular", "/attendance/mark", "manual", "present", "manual"),
+    ("regular", "/attendance/mark", "face_ai", "present", "face_ai"),
+    ("regular", "/attendance/mark", "auto_absent", "absent", "auto_absent"),
+    ("regular", "/attendance/mark-absent", None, "absent", "auto_absent"),
+    ("regular", "/attendance/mark-absent", "manual", "absent", "auto_absent"),
+    ("member_visit", "/attendance/mark", "manual", "visited", "manual"),
+    ("member_visit", "/attendance/mark", "face_ai", "visited", "face_ai"),
+    ("member_visit", "/attendance/mark", "auto_absent", "absent", "auto_absent"),
+    ("member_visit", "/attendance/mark-absent", None, "absent", "auto_absent"),
+    ("member_visit", "/attendance/mark-absent", "manual", "absent", "auto_absent"),
+])
+def test_a_new_record_marked_by_hand_gets_the_status_its_session_and_method_say(client, visit, session_type, route, method, status, saved_method):
+    body = visit(session_type)
+    if method:
+        body["recognition_method"] = method
+
+    answer = client.post(route, json=body)
+
+    payload = answer.json()
+    assert answer.status_code == 200 and (payload["success"], payload["message"]) == (True, "Attendance marked")
+    assert set(payload["data"]) == RECORD_FIELDS
+    assert (payload["data"]["status"], payload["data"]["recognition_method"]) == (status, saved_method)
+    assert stored_records(client) == [(status, saved_method)]
+
+
+@pytest.mark.parametrize("session_type, first", [("regular", "present"), ("member_visit", "visited")])
+def test_marking_absent_after_a_mark_changes_the_one_record_and_says_it_was_already_marked(client, visit, session_type, first):
+    body = visit(session_type)
+    client.post("/attendance/mark", json={**body, "recognition_method": "manual"})
+
+    answer = client.post("/attendance/mark-absent", json=body)
+    again = client.post("/attendance/mark-absent", json=body)
+
+    assert (answer.status_code, answer.json()["success"], answer.json()["message"]) == (200, True, "Already marked")
+    assert set(answer.json()["data"]) == RECORD_FIELDS and answer.json()["data"]["status"] == "absent"
+    assert again.json()["data"]["status"] == "absent"
+    # Still one record; it keeps the method it was first marked with, and it is flagged as marked twice.
+    with client.db() as db:
+        record = db.query(AttendanceRecord).one()
+        assert (record.status, record.recognition_method, record.duplicate_flag) == ("absent", "manual", True)
+        from app.models.audit_log import AuditLog
+        changes = [row.details for row in db.query(AuditLog).filter_by(action="attendance.marked").order_by(AuditLog.id)]
+    assert [(change["status"], change.get("previous_status")) for change in changes] == [(first, None), ("absent", first)]
+
+
+def test_marking_absent_someone_who_is_not_found_is_answered_as_before(client, visit):
+    body = visit("member_visit")
+
+    answer = client.post("/attendance/mark-absent", json={**body, "person_id": 999})
+
+    assert (answer.status_code, answer.json()) == (200, {"success": False, "message": "Person not found", "data": None})
+    assert client.post("/attendance/mark", json={**body, "person_id": 999}).json() == {"detail": "Person not found"}

@@ -8,6 +8,7 @@ from app.models.face_embedding import FaceEnrollment
 from app.models.person import Person
 from app.schemas.person_schema import PersonCreate, PersonUpdate
 from app.serializers import person_data
+from app.services import audit_service
 from app.services.person_service import DUPLICATE_ID, build_person, clean_person_fields, ensure_course_batch, person_with_code
 from app.utils.validation import FieldError
 
@@ -119,5 +120,8 @@ def delete_person(person_id: int, db: Session = Depends(get_db)):
         raise HTTPException(404, "User not found")
     db.query(FaceEnrollment).filter(FaceEnrollment.person_id == person_id).delete()
     db.delete(person)
+    # The row is gone after this, so the log keeps what is needed to tell who it was.
+    audit_service.record(db, "person.deleted", target_type="person", target_id=person.id,
+                         details={"person_code": person.person_code, "full_name": person.full_name, "person_type": person.person_type})
     db.commit()
     return ok("Deleted successfully")

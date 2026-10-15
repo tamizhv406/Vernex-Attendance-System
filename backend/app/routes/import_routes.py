@@ -2,11 +2,11 @@ import logging
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import Response
-from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.services.import_service import PERSON_SPECS, SPECS, ImportSpec, run_import, summary_message, template_file
+from app.utils.errors import safe_error_text, where_it_happened
 from app.utils.spreadsheet import MAX_FILE_BYTES, ImportFileError, read_sheet
 
 router = APIRouter(tags=["Bulk Import"])
@@ -30,18 +30,17 @@ def import_upload(spec: ImportSpec, file: UploadFile | None, db: Session):
     try:
         # One byte past the limit is enough to know the file is too large without reading all of it.
         sheet = read_sheet(file.filename or "", file.file.read(MAX_FILE_BYTES + 1))
+        # Saved in one transaction with its row in the audit log: both, or neither.
         result = run_import(db, spec, sheet)
     except ImportFileError as error:
         db.rollback()
         raise HTTPException(error.status, str(error))
-    except SQLAlchemyError as error:
+    except Exception as error:
         db.rollback()
-        # The driver's own message, without the statement and its values (people's names and numbers).
-        log.error("Bulk import of %s failed in the database: %s: %s", spec.key, type(error).__name__, getattr(error, "orig", None) or "no detail")
-        raise HTTPException(500, IMPORT_FAILED)
-    except Exception:
-        db.rollback()
-        log.exception("Bulk import of %s failed", spec.key)
+        # What kind of error and where, as the general error handler logs it. Not the driver's whole
+        # message (PostgreSQL's DETAIL line quotes the row) and not the traceback's text, which can
+        # hold the names and numbers of the rows being saved.
+        log.error("Bulk import of %s failed: %s | at %s", spec.key, safe_error_text(error), where_it_happened(error))
         raise HTTPException(500, IMPORT_FAILED)
     return {"success": True, "message": summary_message(result), "data": result}
 

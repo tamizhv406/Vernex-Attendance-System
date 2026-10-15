@@ -38,6 +38,8 @@ if not exist backend\.env (
   copy backend\.env.example backend\.env >nul
   echo Created backend\.env ^(uses local SQLite database^)
 )
+rem The secret that signs login tokens: written into backend\.env if it is not there yet, never shown.
+backend\.venv\Scripts\python backend\scripts\create_jwt_secret.py || (echo [ERROR] Could not write JWT_SECRET to backend\.env & pause & exit /b 1)
 
 echo.
 echo [3/3] Installing frontend packages...
@@ -46,5 +48,8 @@ call npm install || (popd & echo [ERROR] npm install failed & pause & exit /b 1)
 popd
 
 echo.
-echo === Setup complete. Now double-click start.bat ===
+echo === Setup complete. ===
+echo Before the first login, create the first super admin ^(after choosing the database in backend\.env^):
+echo     backend\.venv\Scripts\python backend\scripts\create_super_admin.py
+echo Then double-click start.bat.
 pause

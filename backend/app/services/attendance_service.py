@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.models.attendance import AttendanceRecord, AttendanceSession
 from app.models.person import Person
+from app.services import audit_service
 from app.services.sheet_service import sync_attendance_record
 from app.utils.time_utils import now_local, today_local
 
@@ -19,11 +20,13 @@ def find_today_record(db: Session, person_id, session_id):
     ).first()
 
 
-def mark_attendance(db: Session, payload):
+def mark_attendance(db: Session, payload, by_hand: bool = False):
     # One mark at a time: "is there a record already?" and "write one" must not interleave between
     # two scanners that confirm the same student in the same moment.
+    # by_hand: marked through the attendance routes rather than by the scanner. A new record is then
+    # written to the audit log in the same commit as the record itself.
     with mark_lock:
-        record, message = write_attendance(db, payload)
+        record, message = write_attendance(db, payload, by_hand)
     if record and message == "Attendance marked":
         # Outside the lock: the sheet is a slow network call and must not hold up other students.
         sync_attendance_record(db, record)
@@ -31,7 +34,16 @@ def mark_attendance(db: Session, payload):
     return record, message
 
 
-def write_attendance(db: Session, payload):
+def audit_marked(db: Session, record: AttendanceRecord, previous_status: str | None = None):
+    """Adds the audit row for attendance marked by hand. The caller commits, with the change it records."""
+    details = {"person_id": record.person_id, "person_code": record.person_code, "session_id": record.session_id,
+               "status": record.status, "method": record.recognition_method}
+    if previous_status:
+        details["previous_status"] = previous_status
+    audit_service.record(db, "attendance.marked", target_type="attendance_record", target_id=record.id, details=details)
+
+
+def write_attendance(db: Session, payload, by_hand: bool = False):
     person = None
     if payload.person_id:
         person = db.get(Person, payload.person_id)
@@ -54,11 +66,17 @@ def write_attendance(db: Session, payload):
         db.commit()
         return existing, "Already marked"
 
+    # Who is logged in, which app/security.py puts on the database session of every request. A
+    # record written through the API is signed with that account whatever the client sent; only
+    # code that calls this service directly (a script, a test) supplies the name itself.
+    actor = db.info.get("actor")
     now = now_local()
-    if session and session.session_type == "member_visit":
-        status = "visited"
-    elif payload.recognition_method == "auto_absent":
+    # Marked absent by hand is absent whatever the session (the route insists on it), and is saved
+    # that way at once, so the record and its audit row say the same thing.
+    if payload.recognition_method == "auto_absent":
         status = "absent"
+    elif session and session.session_type == "member_visit":
+        status = "visited"
     else:
         status = "present"
         if session and session.grace_time and now.time() > session.grace_time:
@@ -83,11 +101,14 @@ def write_attendance(db: Session, payload):
         confidence_score=payload.confidence_score,
         recognition_method=payload.recognition_method,
         device_name=payload.device_name,
-        marked_by=payload.marked_by,
+        marked_by=actor.email if actor else payload.marked_by,
         notes=payload.notes,
     )
     db.add(record)
     try:
+        if by_hand:
+            db.flush()  # the record's id, for the audit row
+            audit_marked(db, record)
         db.commit()
     except IntegrityError:
         # Another process wrote this person's record first; the database's unique index refused ours.

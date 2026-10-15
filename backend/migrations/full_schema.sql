@@ -3,7 +3,7 @@
 -- app/schema.py enforces on PostgreSQL.
 --
 -- You normally don't need to run anything: the backend creates and upgrades all tables on startup.
--- A database created by an older version is upgraded by 001 -> 004 (also applied automatically);
+-- A database created by an older version is upgraded by 001 -> 006 (also applied automatically);
 -- don't run this file on such a database. Every statement uses IF NOT EXISTS, so re-running it is safe.
 
 CREATE TABLE IF NOT EXISTS courses (
@@ -188,3 +188,68 @@ CREATE TABLE IF NOT EXISTS sheet_sync_logs (
     created_at TIMESTAMP NOT NULL DEFAULT now(),
     updated_at TIMESTAMP NOT NULL DEFAULT now()
 );
+
+-- The people who may log in to the console (005). Separate from user_management, where person_type
+-- 'admin' means a staff member. The email is stored in small letters; password_hash is an Argon2id
+-- hash, never a password. Times are UTC.
+CREATE TABLE IF NOT EXISTS admin_accounts (
+    id SERIAL PRIMARY KEY,
+    email VARCHAR(120) NOT NULL,
+    full_name VARCHAR(160) NOT NULL,
+    password_hash VARCHAR(255) NOT NULL,
+    role VARCHAR(30) NOT NULL DEFAULT 'admin',
+    status VARCHAR(30) NOT NULL DEFAULT 'active',
+    must_change_password BOOLEAN NOT NULL DEFAULT FALSE,
+    failed_login_count INTEGER NOT NULL DEFAULT 0,
+    locked_until TIMESTAMP,
+    last_login_at TIMESTAMP,
+    created_by INTEGER REFERENCES admin_accounts (id) ON DELETE SET NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT now(),
+    updated_at TIMESTAMP NOT NULL DEFAULT now(),
+    temporary_password_expires_at TIMESTAMP,
+    has_been_super_admin BOOLEAN NOT NULL DEFAULT FALSE,
+    CONSTRAINT ck_admin_accounts_role CHECK (role IN ('super_admin', 'admin')),
+    CONSTRAINT ck_admin_accounts_status CHECK (status IN ('active', 'disabled')),
+    CONSTRAINT ck_admin_accounts_email_lower CHECK (email = lower(email))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ix_admin_accounts_email ON admin_accounts (email);
+
+-- One row for each device an account is logged in on. token_hash is the SHA-256 of the refresh
+-- token; the token itself is only ever in the browser's cookie.
+CREATE TABLE IF NOT EXISTS admin_sessions (
+    id SERIAL PRIMARY KEY,
+    account_id INTEGER NOT NULL REFERENCES admin_accounts (id) ON DELETE CASCADE,
+    token_hash VARCHAR(64) NOT NULL,
+    expires_at TIMESTAMP NOT NULL,
+    revoked_at TIMESTAMP,
+    last_used_at TIMESTAMP,
+    ip VARCHAR(64),
+    user_agent VARCHAR(255),
+    created_at TIMESTAMP NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS ix_admin_sessions_account_id ON admin_sessions (account_id);
+CREATE UNIQUE INDEX IF NOT EXISTS ix_admin_sessions_token_hash ON admin_sessions (token_hash);
+
+-- Who did what, and when (006). Rows are only ever added. actor_id is empty for a failed login and
+-- for the command-line tool; details is JSON without passwords, tokens, hashes or face data. Times are UTC.
+CREATE TABLE IF NOT EXISTS audit_logs (
+    id SERIAL PRIMARY KEY,
+    actor_id INTEGER REFERENCES admin_accounts (id) ON DELETE SET NULL,
+    action VARCHAR(60) NOT NULL,
+    target_type VARCHAR(40),
+    target_id INTEGER,
+    details JSON,
+    ip VARCHAR(64),
+    user_agent VARCHAR(255),
+    created_at TIMESTAMP NOT NULL DEFAULT (now() AT TIME ZONE 'utc')
+);
+CREATE INDEX IF NOT EXISTS ix_audit_logs_actor_id ON audit_logs (actor_id);
+CREATE INDEX IF NOT EXISTS ix_audit_logs_action ON audit_logs (action);
+CREATE INDEX IF NOT EXISTS ix_audit_logs_created_at ON audit_logs (created_at);
+CREATE INDEX IF NOT EXISTS ix_audit_logs_target ON audit_logs (target_type, target_id);
+
+-- Row level security with no policy on the login tables and the audit log: nothing reaches them
+-- through Supabase's REST API. The backend connects as the tables' owner and is not affected.
+ALTER TABLE admin_accounts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE admin_sessions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE audit_logs ENABLE ROW LEVEL SECURITY;

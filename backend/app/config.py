@@ -8,7 +8,9 @@ load_dotenv(ENV_PATH)
 
 class Settings:
     database_url: str = os.getenv("DATABASE_URL", "sqlite:///./vernex_attendance.db")
-    frontend_origin: str = os.getenv("FRONTEND_ORIGIN", "http://localhost:5173")
+    # Pages on ANOTHER origin that may read the backend's answers (see allowed_origins). Empty by
+    # default: the console reaches the backend through the /api proxy on its own origin and needs none.
+    frontend_origin: str = os.getenv("FRONTEND_ORIGIN", "")
     face_detector: str = os.getenv("FACE_DETECTOR", "yolov8n")
     face_model: str = os.getenv("FACE_MODEL", "Facenet512")
     # Pixel scaling applied before the model. Facenet2018 is what Facenet512 was trained with.
@@ -85,6 +87,34 @@ class Settings:
     face_timing_log: bool = os.getenv("FACE_TIMING_LOG", "true").lower() == "true"
     google_script_url: str = os.getenv("GOOGLE_SCRIPT_URL", "")
     default_timezone: str = os.getenv("DEFAULT_TIMEZONE", "Asia/Kolkata")
+    # Signs the access tokens. It comes from backend/.env and from nowhere else: there is no default,
+    # and the backend refuses to start without at least 32 bytes of it. scripts/create_jwt_secret.py
+    # writes one into .env without showing it.
+    jwt_secret: str = os.getenv("JWT_SECRET", "").strip()
+    # How long a login lasts: the access token that every request carries, and the refresh cookie
+    # that gets the next one without asking for the password again.
+    auth_access_minutes: int = int(os.getenv("AUTH_ACCESS_MINUTES", "15"))
+    auth_refresh_days: int = int(os.getenv("AUTH_REFRESH_DAYS", "7"))
+    # The path the BROWSER uses for the auth routes. The frontend reaches the backend as /api/...
+    # (Vite, or the reverse proxy in production, takes /api off), so the cookie must say /api/auth
+    # or the browser never sends it back. Set it to /auth only if browsers call the backend directly.
+    auth_cookie_path: str = os.getenv("AUTH_COOKIE_PATH", "/api/auth").strip() or "/api/auth"
+    # /docs, /redoc and /openapi.json describe every route to anyone who asks. Off unless switched on.
+    api_docs: bool = os.getenv("API_DOCS", "false").lower() == "true"
 
 
 settings = Settings()
+
+
+def allowed_origins(setting: str) -> list:
+    # The pages that may read the backend's answers from another origin: the exact addresses in
+    # FRONTEND_ORIGIN, separated by commas. The console does not need any, since it reaches the
+    # backend through the /api proxy on its own origin. Never a pattern, "*" or "null": the refresh
+    # cookie is answered with a new access token, so a page that may read that answer can take over
+    # the login of anyone who opens it in a browser that is logged in.
+    origins = []
+    for item in setting.split(","):
+        origin = item.strip().rstrip("/")
+        if origin and origin not in ("*", "null") and origin not in origins:
+            origins.append(origin)
+    return origins

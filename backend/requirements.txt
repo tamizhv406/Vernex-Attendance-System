@@ -12,5 +12,7 @@ deepface==0.0.101
 tf-keras
 ultralytics
 openpyxl
+argon2-cffi
+pyjwt
 pytest
 httpx2

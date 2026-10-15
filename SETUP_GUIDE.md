@@ -40,10 +40,11 @@ Avoid very long paths or folders inside OneDrive.
 
 1. create a Python virtual environment in `backend\.venv`
 2. install the Python packages (large download, 5–15 minutes)
-3. create `backend\.env` from `backend\.env.example`
+3. create `backend\.env` from `backend\.env.example`, and write a random `JWT_SECRET` into it
+   (the secret that signs logins; it is not shown and must never be shared or committed)
 4. run `npm install` in `frontend`
 
-Wait for `=== Setup complete ===`.
+Wait for `=== Setup complete ===`. Then create the first login: see "First login" below.
 
 **Manual way** (same thing, in PowerShell, from the project folder):
 
@@ -54,6 +55,7 @@ py -3.10 -m venv .venv
 python -m pip install --upgrade pip
 pip install -r requirements.txt
 copy .env.example .env
+python scripts\create_jwt_secret.py
 cd ..\frontend
 npm install
 ```
@@ -76,6 +78,33 @@ cd backend
 ```
 
 Tables are created automatically on first start in either case.
+
+### First login
+
+There is no default account and no default password. After the database is chosen, create the
+first super admin on this PC:
+
+```powershell
+cd backend
+.\.venv\Scripts\python scripts\create_super_admin.py
+```
+
+It shows which database it writes to and asks for an email, a name and a password (at least 10
+characters; typed hidden, twice). Log in to the app with that email and password.
+
+- Run it again and it changes nothing: a super admin exists.
+- `--force` with a new email adds another super admin.
+- `--force` with the email of an existing super admin asks you to type the email again, then
+  replaces the password, unlocks the account and logs it out everywhere. Use this for a forgotten
+  password. It does the same for an admin that used to be a super admin (it stays an admin): the
+  Super Admin portal never resets the password of an account that is or has been a super admin.
+
+If you switch `backend\.env` to another database later, run the script again: accounts live in
+the database.
+
+Accounts for the other people who use the app are added in the app itself: log in as the super
+admin, open **Admins** in the Super Admin portal and press **Add admin**. Each new account gets a
+temporary password, shown once, which the person replaces when they first log in.
 
 ---
 
@@ -100,7 +129,8 @@ npm run dev:https
 ```
 
 In the backend window, wait for **`face models ready`** (about 30 s; the very first start also
-downloads ~100 MB of model weights). Check http://localhost:8000/health in a browser.
+downloads ~100 MB of model weights). http://localhost:8000/health in a browser shows
+`"status":"starting"` until then and `"status":"ok"` after.
 
 The frontend window prints links like:
 
@@ -121,7 +151,7 @@ To stop: close both windows (or press `Ctrl+C` in each).
 1. PC and phone must be on the **same Wi-Fi**.
 2. On the phone open `https://<PC Wi-Fi IP>:5173/attendance-scanner`.
 3. The certificate is self-signed, so the browser warns — tap **Advanced → Proceed**.
-4. Log in, then **allow camera access**.
+4. Log in with your email and password, then **allow camera access**.
 
 The first time, Windows may ask whether Node.js may use the network — click **Allow** (tick Private networks).
 
@@ -158,6 +188,14 @@ More detail (recognition settings, accuracy) is in `README.md`.
 | Face always "Unknown" | Re-enroll in good light, face fully visible, follow all five shots |
 | Upload says Excel files need `openpyxl` | The backend was updated without its new package. Run `setup.bat` again (or `backend\.venv\Scripts\python -m pip install -r backend\requirements.txt`), then restart the backend. CSV files work in the meantime |
 | A contact number is refused | It must be 10 digits. Spaces, hyphens and `+91` in front are accepted; other country codes, letters and symbols are not |
+| Backend stops with `JWT_SECRET is missing` | Run `backend\.venv\Scripts\python backend\scripts\create_jwt_secret.py`, then start the backend again |
+| Backend says `No module named 'argon2'` or `'jwt'` | The backend was updated without its new packages. Run `setup.bat` again (or `backend\.venv\Scripts\python -m pip install -r backend\requirements.txt`) |
+| Nobody can log in on a new installation | No account exists yet. Create the first super admin: see "First login" |
+| "Too many failed attempts" | Five wrong passwords lock an email for 15 minutes. Wait, or reset the password with `create_super_admin.py --force` |
+| "Too many login attempts from this device" | One device gets ten attempts a minute. Wait a minute |
+| Logged out again after reloading the page | Open the app with the **https://** link (or `http://localhost:5173` on the PC itself). The login cookie only travels over HTTPS |
+| Forgot the super admin password | `backend\.venv\Scripts\python backend\scripts\create_super_admin.py --force`, type that account's email, confirm it, choose a new password. The Super Admin portal cannot reset the password of an account that is or has been a super admin, only that of other admins |
+| "This temporary password has expired" | A temporary password works for 72 hours. For an **admin** account, a super admin resets the password again in the portal (Admins) and passes on the new one. For an account that **is or has been a super admin**, the portal cannot reset it: on the server run `backend\.venv\Scripts\python backend\scripts\create_super_admin.py --force`, type that account's email twice, then choose a new password |
 
 Run the tests (optional):
 
@@ -168,5 +206,5 @@ cd ..\frontend
 npm test
 ```
 
-> Security note: the login page does not check passwords and the API has no authentication.
-> Only use it on a trusted network.
+> Security note: every page and every API route now needs a login, but the app is still served by
+> the development server with a self-signed certificate. Only use it on a trusted network.

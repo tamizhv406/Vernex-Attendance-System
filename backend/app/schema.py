@@ -1,7 +1,9 @@
 from sqlalchemy import inspect, text
 
 from app.database import Base, engine
+from app.models.admin_account import AdminAccount, AdminSession
 from app.models.attendance import AttendanceRecord, AttendanceSession
+from app.models.audit_log import AuditLog
 from app.models.course import Course, CourseBatch
 from app.models.face_embedding import FaceEmbedding, FaceEnrollment
 from app.models.person import Person
@@ -254,6 +256,18 @@ POSTGRES_REPAIR_STATEMENTS = [
     """
     CREATE INDEX IF NOT EXISTS idx_attendance_records_course_batch ON attendance_records(course_id, batch_id)
     """,
+    # Row level security with no policy: the login tables and the audit log can be reached through
+    # this backend only, never through Supabase's own REST API. Switching it on again where it is on
+    # changes nothing.
+    """
+    ALTER TABLE admin_accounts ENABLE ROW LEVEL SECURITY
+    """,
+    """
+    ALTER TABLE admin_sessions ENABLE ROW LEVEL SECURITY
+    """,
+    """
+    ALTER TABLE audit_logs ENABLE ROW LEVEL SECURITY
+    """,
 ]
 
 
@@ -270,11 +284,27 @@ def init_database_schema(bind=None) -> None:
 
 def upgrade_existing_tables(bind) -> None:
     # create_all only makes missing tables. A database made by an earlier version gets the newer
-    # column and index here. Both steps add something and change no existing row.
+    # columns and index here. Every step adds something; the one that changes existing rows is the
+    # has_been_super_admin backfill below, which only ever sets that flag on current super admins.
     with bind.begin() as connection:
         columns = {column["name"] for column in inspect(connection).get_columns("face_embeddings")}
         if "capture_meta" not in columns:
             connection.execute(text("ALTER TABLE face_embeddings ADD COLUMN capture_meta TEXT"))
+        # Login accounts made before temporary passwords expired. Empty for all of them: a password
+        # given out before this existed keeps working until it is changed, as it always did.
+        columns = {column["name"] for column in inspect(connection).get_columns("admin_accounts")}
+        if "temporary_password_expires_at" not in columns:
+            connection.execute(text("ALTER TABLE admin_accounts ADD COLUMN temporary_password_expires_at TIMESTAMP"))
+        # Accounts that are or have been a super admin, whose password the portal never resets.
+        if "has_been_super_admin" not in columns:
+            no = "0" if connection.dialect.name == "sqlite" else "FALSE"
+            connection.execute(text(f"ALTER TABLE admin_accounts ADD COLUMN has_been_super_admin BOOLEAN NOT NULL DEFAULT {no}"))
+        # Every super admin has held the role: the ones from before the column existed, and any written
+        # into the table by hand. It only ever sets the flag, so running it on every start changes nothing more.
+        connection.execute(
+            text("UPDATE admin_accounts SET has_been_super_admin = :yes WHERE role = 'super_admin' AND has_been_super_admin = :no"),
+            {"yes": True, "no": False},
+        )
 
         index = next(item for item in AttendanceRecord.__table__.indexes if item.name == "uq_attendance_session_person_date")
         if index.name in {item["name"] for item in inspect(connection).get_indexes("attendance_records")}:

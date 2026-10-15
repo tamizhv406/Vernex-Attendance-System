@@ -36,6 +36,9 @@ const backendProxy = {
   "/api": {
     target: process.env.BACKEND_URL || "http://127.0.0.1:8000",
     changeOrigin: true,
+    // Passes the browser's own address on to the backend (X-Forwarded-For), which counts login
+    // attempts per address. Without it every phone and PC would look like this one machine.
+    xfwd: true,
     rewrite: path => path.replace(/^\/api/, "")
   }
 };
