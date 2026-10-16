@@ -37,6 +37,14 @@ jobs:
         run: pip install --extra-index-url https://download.pytorch.org/whl/cpu -r requirements.txt
       - name: Tests on SQLite
         run: python -m pytest -q -p no:cacheprovider
+      - name: Prepare PostgreSQL test user
+        env:
+          PGPASSWORD: ci-only-password
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y postgresql-client
+          # Ensure vernex_app role exists and has a password so tests using that user can authenticate
+          psql -h 127.0.0.1 -U vxadmin -d postgres -c "DO $$BEGIN \n            IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='vernex_app') THEN \n              CREATE ROLE vernex_app WITH LOGIN PASSWORD 'ci-only-password'; \n            ELSE \n              ALTER ROLE vernex_app WITH LOGIN PASSWORD 'ci-only-password'; \n            END IF; \n          END$$;"
       - name: Tests on PostgreSQL 17
         env:
           VERNEX_TEST_POSTGRES_URL: postgresql://vxadmin:ci-only-password@127.0.0.1:5432/postgres
