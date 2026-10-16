@@ -45,6 +45,8 @@ backend/logs/
 # The local database holds student names and face vectors: never published
 *.db
 *.db-journal
+*.db.bak
+*.bak
 .pytest_cache/
 
 # The settings template has placeholders only, and setup.bat needs it
