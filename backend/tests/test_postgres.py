@@ -379,10 +379,11 @@ def test_an_issue_being_changed_is_locked_against_a_second_change(migrated):
 # ---- the application over HTTP, on PostgreSQL ------------------------------------------------------------
 
 def as_app_role(engine):
-    # The same database, reached as the least-privilege account of migration 009 (no password is
-    # needed on this local test server).
+    # The same database, reached as the least-privilege account of migration 009.
     with engine.begin() as connection:
-        connection.execute(text("ALTER ROLE vernex_app WITH LOGIN"))
+        password = engine.url.password
+        pw_clause = f" PASSWORD '{password}'" if password else ""
+        connection.execute(text(f"ALTER ROLE vernex_app WITH LOGIN{pw_clause}"))
     return create_engine(engine.url.set(username="vernex_app"), hide_parameters=True)
 
 
