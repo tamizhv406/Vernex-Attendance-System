@@ -3,6 +3,8 @@ node_modules/
 backend/.venv/
 .venv/
 venv/
+# Any other local environment: backend/.venv310, an old one set aside (.venv-py315-unused, .venv-old)
+.venv*/
 
 # Build output
 dist/
@@ -47,6 +49,11 @@ backend/logs/
 *.db-journal
 *.db.bak
 *.bak
+# A database file renamed or set aside (vernex_attendance.db.empty-unused) is still a database
+*.db.*
+*.sqlite
+*.sqlite3
+*.tmp
 .pytest_cache/
 
 # The settings template has placeholders only, and setup.bat needs it

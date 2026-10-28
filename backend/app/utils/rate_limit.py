@@ -47,3 +47,6 @@ class AccountLimit:
 frames = AccountLimit("frames", 600, 30)
 # Spreadsheet uploads (each up to 5 MB and 2,000 rows).
 uploads = AccountLimit("uploads", 20, 60)
+# Attendance codes, scanned or typed: two a second over a minute keeps up with a queue at the door,
+# and is far too few to find a working code by trying (there are 2^40 of them).
+codes = AccountLimit("codes", 120, 60)

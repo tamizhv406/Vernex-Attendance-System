@@ -144,7 +144,8 @@ def test_a_mark_without_a_status_never_changes_a_record(client, school):
 def test_a_student_of_another_batch_is_refused(client, school):
     answer = client.post("/attendance/mark", json={"session_id": school["today"], "person_id": school["outsider"]})
 
-    assert answer.status_code == 404 and answer.json() == {"detail": "Person does not belong to this course"} and stored(client) == []
+    # 409: the student exists and may not be marked here, as for a QR code (404 until October 2026).
+    assert answer.status_code == 409 and answer.json() == {"detail": "Other Batch is not in this batch."} and stored(client) == []
 
 
 def test_a_scanner_record_can_be_corrected_by_hand(client, school):

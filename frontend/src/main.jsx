@@ -17,6 +17,7 @@ import PeoplePage from "./pages/People";
 import ReportProblem from "./pages/ReportProblem";
 import Reports from "./pages/Reports";
 import AttendanceScanner from "./pages/Scanner";
+import QrScanner from "./pages/QrScanner";
 import SettingsPage from "./pages/Settings";
 import AdminsPage from "./pages/portal/Admins";
 import AuditLogPage from "./pages/portal/AuditLog";
@@ -108,6 +109,7 @@ function Console({ page, issueId, allowed, setPage, logout, account }) {
     {allowed && ["students", "staff", "members"].includes(page) && <PeoplePage page={page} data={data} />}
     {allowed && page === "enrollment" && <FaceEnrollment data={data} />}
     {allowed && page === "scanner" && <AttendanceScanner data={data} />}
+    {allowed && page === "qrScanner" && <QrScanner data={data} />}
     {allowed && page === "reports" && <Reports data={data} />}
     {allowed && page === "settings" && <SettingsPage data={data} logout={logout} account={account} setPage={setPage} />}
     {reporting && <ReportProblem onClose={() => setReporting(false)}

@@ -45,7 +45,7 @@ export default function Login({ notice }) {
         </form>
       </section>
       <aside className="hidden flex-col justify-between bg-ink p-10 text-white md:flex">
-        <p className="text-xs font-semibold uppercase tracking-wider text-white/50">AI-powered smart attendance</p>
+        <p className="text-xs font-semibold uppercase tracking-wider text-white/50">Smart attendance</p>
         <ul className="grid gap-5">
           <Feature icon={Users} title="Courses, batches, students">Everyone organised the way your institute already works.</Feature>
           <Feature icon={ScanFace} title="Guided face enrollment">A few poses, checked for light and sharpness as they are taken.</Feature>

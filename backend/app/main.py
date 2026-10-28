@@ -10,7 +10,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
 from app.config import allowed_origins, settings
-from app.database import get_db
+from app.database import get_db, require_database_file, require_login_accounts
 from app.models import admin_account, attendance, audit_log, course, face_embedding, issue, person, sync_log, timing
 from app.routes import attendance_routes, auth_routes, course_routes, face_routes, import_routes, issue_routes, person_routes, sheet_routes, super_admin_routes, timing_routes
 from app.schema import init_database_schema
@@ -37,7 +37,11 @@ def startup():
     # Before anything else: without the signing secret nobody could log in, so the backend says so
     # and stops instead of starting up useless.
     auth_service.signing_key()
+    # The same for the database: a missing SQLite file, or one without a login account, is a wrong
+    # DATABASE_URL. Said at once, instead of a backend where every password is "incorrect".
+    require_database_file()
     init_database_schema()
+    require_login_accounts()
     threading.Thread(target=warm_up, daemon=True).start()
 
 
@@ -47,7 +51,7 @@ async def lifespan(app):
     yield
 
 
-app = FastAPI(title="Vernex Smart Attendance AI", version="0.1.0", lifespan=lifespan, **docs_addresses(settings.api_docs))
+app = FastAPI(title="Vernex Smart Attendance", version="0.1.0", lifespan=lifespan, **docs_addresses(settings.api_docs))
 
 # Added first so that it sits inside the CORS middleware: its answers get the CORS headers too.
 app.add_middleware(ServerErrors)
@@ -97,19 +101,25 @@ logged_in = [Depends(require_admin)]
 
 @app.get("/", dependencies=logged_in)
 def root():
-    return {"success": True, "message": "Vernex Smart Attendance AI backend is running", "data": {"docs": "/docs"} if settings.api_docs else {}}
+    return {"success": True, "message": "Vernex Smart Attendance backend is running", "data": {"docs": "/docs"} if settings.api_docs else {}}
 
 
 @app.get("/health")
 def health(db: Session = Depends(get_db)):
     # Open to anyone, so it says one word and nothing about what is behind it: "ok" once the backend
-    # can be used, "starting" while the face models load, "unavailable" if the database cannot be reached.
+    # can be used, "starting" while the face models load, "failed" if they could not be loaded (the log
+    # says why), "unavailable" if the database cannot be reached.
     try:
         db.execute(text("SELECT 1"))
     except Exception:
         return JSONResponse(status_code=503, content={"success": False, "message": "unavailable", "data": {"status": "unavailable"}})
-    status = "ok" if face_service.models_ready else "starting"
-    return {"success": True, "message": status, "data": {"status": status}}
+    return {"success": True, "message": models_status(), "data": {"status": models_status()}}
+
+
+def models_status():
+    if face_service.models_ready:
+        return "ok"
+    return "failed" if face_service.models_failed else "starting"
 
 
 @app.get("/health/live")
@@ -127,14 +137,16 @@ def health_ready(db: Session = Depends(get_db)):
     except Exception:
         return JSONResponse(status_code=503, content={"success": False, "message": "unavailable", "data": {"status": "unavailable"}})
     if not face_service.models_ready:
-        return JSONResponse(status_code=503, content={"success": False, "message": "starting", "data": {"status": "starting"}})
+        status = models_status()
+        return JSONResponse(status_code=503, content={"success": False, "message": status, "data": {"status": status}})
     return {"success": True, "message": "ok", "data": {"status": "ok"}}
 
 
 @app.get("/health/details", dependencies=logged_in)
 def health_details(db: Session = Depends(get_db)):
     db.execute(text("SELECT 1"))
-    return {"success": True, "message": "Healthy", "data": {"database": "connected", "face_models": "ready" if face_service.models_ready else "loading"}}
+    models = {"ok": "ready", "failed": "failed", "starting": "loading"}[models_status()]
+    return {"success": True, "message": "Healthy", "data": {"database": "connected", "face_models": models}}
 
 
 app.include_router(auth_routes.router)

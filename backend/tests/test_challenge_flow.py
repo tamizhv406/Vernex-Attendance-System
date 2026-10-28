@@ -142,13 +142,20 @@ def test_a_head_already_turned_is_not_an_answer(db_session, camera):
 
 def test_a_tilted_flat_picture_is_not_a_head_turn(db_session, camera):
     # Tilting a photo shifts the eyes inside the face box like a turn does, but the box gets narrower.
-    session, _ = batch_of(db_session, ["Arun"])
+    # It is never an answer; since a real person who moves while turning does the same, it is a
+    # retry, not a wrong answer.
+    session, people = batch_of(db_session, ["Arun"])
     for _ in range(3):
         scan(db_session, camera, session, [look(0, "Arun")])
 
     answer = scan(db_session, camera, session, [look(0, "Arun", LEFT, squeeze=0.75)])
 
-    assert results(answer) == ["challenge_failed"] and records(db_session) == []
+    assert results(answer) == ["challenge_retry"] and records(db_session) == []
+    assert entry(session, people["Arun"])["failures"] == 0 and entry(session, people["Arun"])["retries"] == 1
+
+
+def entry(session, person):
+    return tracking_service.challenges[(session.id, person.id)]
 
 
 def test_the_answer_must_come_from_the_same_tracked_face(db_session, camera):
@@ -413,4 +420,128 @@ def test_from_an_angle_a_tilted_flat_picture_still_fails(db_session, camera):
 
     answer = scan(db_session, camera, session, [look(0, "Arun", ANGLED + 0.10, squeeze=0.75)])
 
-    assert results(answer) == ["challenge_failed"] and records(db_session) == []
+    assert results(answer) == ["challenge_retry"] and records(db_session) == []
+
+
+# ---- A face box that changes shape while turning (28 October 2026: a genuine person locked so) ----
+#
+# These prove the rule only: with the detector replaced, a "flat picture" here is a narrower or wider
+# box. Whether real prints and screens behave like that in front of a real camera is not shown here.
+
+def attempt(db, camera, session, turn, squeeze, scanner="cam-1"):
+    # One whole try: wait out any pause, hold still facing the camera twice, then the movement.
+    scan(db, camera, session, [look(0, "Arun")], scanner=scanner, gap=4.0)
+    scan(db, camera, session, [look(0, "Arun")], scanner=scanner)
+    return one(scan(db, camera, session, [look(0, "Arun", turn, squeeze)], scanner=scanner))["result"]
+
+
+@pytest.mark.parametrize("squeeze", [0.70, 0.80, 0.88, 1.12, 1.25, 1.40])
+@pytest.mark.parametrize("turn", [LEFT, 0.20])
+def test_a_box_that_changes_shape_can_never_answer_however_often_it_is_tried(db_session, camera, squeeze, turn):
+    session, people = batch_of(db_session, ["Arun"])
+
+    outcomes = [attempt(db_session, camera, session, turn, squeeze) for _ in range(tracking_service.CHALLENGE_MAX_RETRIES)]
+
+    assert outcomes == ["challenge_retry"] * (tracking_service.CHALLENGE_MAX_RETRIES - 1) + ["locked"]
+    assert records(db_session) == [] and entry(session, people["Arun"])["failures"] == 0
+    # Locked: even the right movement marks nobody now.
+    assert attempt(db_session, camera, session, LEFT, 1.0) == "locked" and records(db_session) == []
+
+
+def test_a_retry_is_not_held_against_a_real_person_who_then_turns_properly(db_session, camera):
+    session, people = batch_of(db_session, ["Arun"])
+
+    assert attempt(db_session, camera, session, LEFT, 0.75) == "challenge_retry"
+    scan(db_session, camera, session, [look(0, "Arun")], gap=4.0)
+    scan(db_session, camera, session, [look(0, "Arun")])
+    scan(db_session, camera, session, [look(0, "Arun")])
+    answer = scan(db_session, camera, session, [look(0, "Arun", LEFT)])
+
+    assert results(answer) == ["verified"] and one(answer)["record"]["person_id"] == people["Arun"].id
+    assert entry(session, people["Arun"])["failures"] == 0
+
+
+def test_a_retry_wipes_what_was_collected_and_pauses_like_a_wrong_answer(db_session, camera):
+    session, _ = batch_of(db_session, ["Arun"])
+    for _ in range(3):
+        scan(db_session, camera, session, [look(0, "Arun")])
+    scan(db_session, camera, session, [look(0, "Arun", LEFT, squeeze=0.75)])
+
+    # Straight away the right way: the run is gone and the pause is in force, as after a wrong answer.
+    assert results(scan(db_session, camera, session, [look(0, "Arun", LEFT)])) == ["pending"]
+    assert records(db_session) == []
+
+
+def test_turning_the_wrong_way_is_still_a_strike_whatever_the_box_does(db_session, camera):
+    session, people = batch_of(db_session, ["Arun"])
+
+    outcomes = [attempt(db_session, camera, session, RIGHT, squeeze) for squeeze in (0.75, 1.0, 1.25)]
+
+    assert outcomes == ["challenge_failed", "challenge_failed", "locked"] and records(db_session) == []
+
+
+def test_a_box_that_changes_shape_without_turning_is_not_an_answer_of_any_kind(db_session, camera):
+    session, people = batch_of(db_session, ["Arun"])
+    for _ in range(3):
+        scan(db_session, camera, session, [look(0, "Arun")])
+
+    answer = scan(db_session, camera, session, [look(0, "Arun", 0.02, squeeze=0.75)])
+
+    assert one(answer)["challenge"] == {"action": "turn", "direction": "left"} and records(db_session) == []
+    assert entry(session, people["Arun"])["failures"] == 0 and entry(session, people["Arun"])["retries"] == 0
+
+
+@pytest.mark.parametrize("squeeze, passes", [(0.93, True), (1.07, True), (0.88, False), (1.12, False)])
+def test_the_box_change_limit_is_where_it_was(db_session, camera, squeeze, passes):
+    session, _ = batch_of(db_session, ["Arun"])
+    for _ in range(3):
+        scan(db_session, camera, session, [look(0, "Arun")])
+
+    outcome = one(scan(db_session, camera, session, [look(0, "Arun", LEFT, squeeze)]))["result"]
+
+    assert outcome == ("verified" if passes else "challenge_retry")
+    assert len(records(db_session)) == (1 if passes else 0)
+
+
+def test_a_photo_that_turns_and_changes_shape_is_still_a_photo(db_session, camera):
+    session, _ = batch_of(db_session, ["Arun"])
+    camera["liveness"] = {0: "spoof"}
+
+    answers = [scan(db_session, camera, session, [look(0, "Arun", turn, squeeze)], gap=gap) for turn, squeeze, gap in ((0, 1, 4), (0, 1, 1), (LEFT, 0.75, 1), (LEFT, 1, 1))]
+
+    assert all(results(answer) == ["liveness_failed"] for answer in answers) and records(db_session) == []
+
+
+def test_retries_are_counted_across_cameras(db_session, camera):
+    session, _ = batch_of(db_session, ["Arun"])
+
+    outcomes = [attempt(db_session, camera, session, LEFT, 0.75, scanner=f"cam-{index % 3}") for index in range(tracking_service.CHALLENGE_MAX_RETRIES)]
+
+    assert outcomes[-1] == "locked" and records(db_session) == []
+
+
+def test_the_challenge_limits_are_unchanged():
+    # Change C only stopped counting a changed box as a wrong answer. Everything else stays.
+    assert (tracking_service.CHALLENGE_TURN, tracking_service.CHALLENGE_BOX_CHANGE, tracking_service.CHALLENGE_STRAIGHT) == (0.08, 0.10, 0.04)
+    assert (tracking_service.CHALLENGE_MAX_FAILURES, tracking_service.CHALLENGE_LOCK_SECONDS, tracking_service.SPOOF_COOLDOWN_SECONDS) == (3, 120, 3)
+
+
+def test_the_log_says_why_an_answer_did_not_count_in_numbers_only(db_session, camera, monkeypatch):
+    lines = []
+    monkeypatch.setattr(face_routes, "log_decision", lambda **fields: lines.append(fields))
+    session, _ = batch_of(db_session, ["Arun"])
+
+    # A changed box, then (after the pause) a turn the wrong way.
+    for turn, squeeze, gap in ((0, 1, 1), (0, 1, 1), (LEFT, 0.75, 1), (0, 1, 4), (0, 1, 1), (RIGHT, 1, 1)):
+        scan(db_session, camera, session, [dict(look(0, "Arun", turn, squeeze), eyes=True)], gap=gap)
+
+    notes = [line["challenge_note"] for line in lines if line.get("challenge_note")]
+    assert [note["reason"] for note in notes] == ["box_changed", "wrong_direction"]
+    assert notes[0]["turned"] == pytest.approx(0.10) and notes[0]["box_change"] == pytest.approx(0.2545, abs=1e-3)
+    assert notes[1]["turned"] == pytest.approx(-0.10)
+    retry = next(line for line in lines if line["result"] == "challenge_retry")
+    assert retry["detection_confidence"] == 0.9 and retry["eyes"] is True
+    # Ids, scores, sizes and reasons: no vector, no picture, no name.
+    for line in lines:
+        assert "embedding" not in line and "image" not in line and "person_name" not in line
+        assert all(not isinstance(value, (list, tuple)) or len(value) <= 4 for value in line.values())

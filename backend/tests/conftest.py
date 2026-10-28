@@ -48,6 +48,7 @@ def auth_memory(monkeypatch):
     auth_service._decoy_hash.cache_clear()
     rate_limit.frames.reset()
     rate_limit.uploads.reset()
+    rate_limit.codes.reset()
     yield
     auth_service.reset_memory()
     auth_service._decoy_hash.cache_clear()

@@ -169,7 +169,13 @@ CHALLENGE_STEADY = 0.03
 CHALLENGE_STEADY_SECONDS = 0.4
 # A real head that turns keeps the shape of its face box. A flat photo that is tilted to shift the
 # eyes gets a visibly narrower box. A "turn" whose box changed by more than this is not a head turning.
+# It never passes. It is not counted as a wrong answer either: a real person who leans in or moves
+# while turning changes the box too (the real test of 28 October 2026 locked a genuine, enrolled
+# person that way), so it is answered "retry", with the same wipe and pause as a wrong answer.
 CHALLENGE_BOX_CHANGE = 0.10
+# So that a flat picture cannot be tilted again and again without end, this many retries in one
+# session lock the student exactly as CHALLENGE_MAX_FAILURES wrong answers do.
+CHALLENGE_MAX_RETRIES = 6
 # Time to answer after the instruction appears. Running out of time is not held against anyone:
 # the same instruction simply starts again (with the direction fixed, waiting gains an attacker nothing).
 CHALLENGE_SECONDS = 10
@@ -195,14 +201,14 @@ def challenge_entry(session_id, person_id, now):
         del challenges[stale]
     entry = challenges.get((session_id, person_id))
     if entry is None:
-        entry = challenges[(session_id, person_id)] = {"direction": pick_direction(), "failures": 0, "locked_until": 0.0, "created": now}
+        entry = challenges[(session_id, person_id)] = {"direction": pick_direction(), "failures": 0, "retries": 0, "locked_until": 0.0, "created": now}
     return entry
 
 
 def verify(key, track, person_id, score, now, turn=None, box=None, challenge=True):
     # One look at a face that was identified as person_id and judged live. Returns where this face
     # stands: "confirmed" (may be marked), "pending" (identity looks still being collected),
-    # "straight" / "turn" (what the face has to do next for the challenge), "failed" or "locked".
+    # "straight" / "turn" (what the face has to do next for the challenge), "retry", "failed" or "locked".
     session_id = key[0]
     if not challenge:
         return "confirmed" if observe(key, track, person_id, score, True, now) else "pending"
@@ -252,7 +258,8 @@ def respond(key, track, entry, person_id, turn, box, now):
     # other way), and where it points now, measured the same way.
     sign = 1 if entry["direction"] == "left" else -1
     wanted, pointing = sign * (turn - state["base"]), sign * turn
-    if wanted >= CHALLENGE_TURN and abs(shape / state["shape"] - 1) <= CHALLENGE_BOX_CHANGE:
+    box_change = abs(shape / state["shape"] - 1)
+    if wanted >= CHALLENGE_TURN and box_change <= CHALLENGE_BOX_CHANGE:
         state.update(passed_at=now, started=now)
         return "passed"
     if wanted <= -CHALLENGE_TURN and pointing > -CHALLENGE_STRAIGHT:
@@ -260,13 +267,17 @@ def respond(key, track, entry, person_id, turn, box, now):
         # wrong way yet. This becomes the new starting pose once it is held still.
         state.update(stage="straight", base=None, shape=None, steady={"turn": turn, "shape": shape, "since": now}, started=now)
         return "straight"
-    if abs(wanted) >= CHALLENGE_TURN:
-        # Turned the other way, or "turned" the way a tilted flat picture does.
-        entry["failures"] += 1
-        scanner_state(key, now)["blocked"][person_id] = now + SPOOF_COOLDOWN_SECONDS
-        clear(track)
-        if entry["failures"] >= CHALLENGE_MAX_FAILURES:
-            entry.update(failures=0, locked_until=now + CHALLENGE_LOCK_SECONDS)
-            return "locked"
-        return "failed"
-    return "turn"
+    if abs(wanted) < CHALLENGE_TURN:
+        return "turn"
+    # Why this answer did not count, in numbers only, for the scanner's log (face_routes).
+    track["challenge_note"] = {"reason": "wrong_direction" if wanted < 0 else "box_changed", "turned": round(float(wanted), 4), "box_change": round(float(box_change), 4)}
+    # Turned the other way: a wrong answer. Turned the right way but the box changed shape: not an
+    # answer at all (see CHALLENGE_BOX_CHANGE). Either way what was collected is wiped and paused.
+    counter, limit, result = ("failures", CHALLENGE_MAX_FAILURES, "failed") if wanted < 0 else ("retries", CHALLENGE_MAX_RETRIES, "retry")
+    entry[counter] = entry.get(counter, 0) + 1
+    scanner_state(key, now)["blocked"][person_id] = now + SPOOF_COOLDOWN_SECONDS
+    clear(track)
+    if entry[counter] >= limit:
+        entry.update(failures=0, retries=0, locked_until=now + CHALLENGE_LOCK_SECONDS)
+        return "locked"
+    return result

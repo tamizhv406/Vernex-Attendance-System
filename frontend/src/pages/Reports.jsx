@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { CalendarSearch, ClipboardCheck, Filter } from "lucide-react";
 import { getAttendanceByDate, getAttendanceSessions, getSessionRecords } from "../lib/api";
-import { methodLabel, sessionLabel, sessionsOn, withRecord } from "../lib/attendance";
+import { WHO_OPTIONS, methodLabel, recordIsFor, scopePeople, sessionLabel, sessionsOn, withRecord } from "../lib/attendance";
 import { batchName, courseName, formatTime, localDate, mapAttendance } from "../lib/format";
 import { Button, Card, DataTable, EmptyState, ErrorState, FormInput, FormSelect, Identity, Notice, Page, SearchInput, Segmented, StatusBadge } from "../ui";
 import { SessionRegister } from "./handMarks";
@@ -16,6 +16,9 @@ export default function Reports({ data }) {
   const [message, setMessage] = useState("");
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState("all");
+  // Students, staff or members. Staff and member records have no course or batch, so they are
+  // found with "All courses" and narrowed here instead.
+  const [who, setWho] = useState("all");
   const batches = data.batches.filter(batch => !courseId || Number(batch.course_id) === Number(courseId));
   useEffect(() => { if (batchId && !batches.some(batch => Number(batch.id) === Number(batchId))) setBatchId(""); }, [batchId, batches]);
   const load = async () => {
@@ -32,9 +35,10 @@ export default function Reports({ data }) {
     }
   };
   useEffect(() => { load(); }, []);
-  const count = name => rows.filter(record => record.status === name).length;
-  const statuses = ["Present", "Late", "Absent"].filter(name => count(name) > 0);
-  const visible = rows
+  const forWho = rows.filter(record => recordIsFor(record, who));
+  const count = name => forWho.filter(record => record.status === name).length;
+  const statuses = ["Present", "Late", "Absent", "Visited"].filter(name => count(name) > 0);
+  const visible = forWho
     .filter(record => status === "all" || record.status === status)
     .filter(record => [record.person_name, record.person_code, record.course_name, record.batch_name].filter(Boolean).join(" ").toLowerCase().includes(query.trim().toLowerCase()))
     .sort((a, b) => new Date(b.marked_time) - new Date(a.marked_time));
@@ -55,7 +59,10 @@ export default function Reports({ data }) {
     {message && <ErrorState title="Could not load records" message={message} onRetry={load} />}
 
     <Card title="Records" subtitle={shown ? `${rows.length} record${rows.length === 1 ? "" : "s"} on ${shown.date}` : undefined} action={rows.length > 0 && <SearchInput value={query} onChange={setQuery} placeholder="Search records" className="w-full sm:w-64" />}>
-      {rows.length > 0 && <div className="mb-4"><Segmented label="Status" value={status} onChange={setStatus} options={[{ value: "all", label: "All", count: rows.length }, ...statuses.map(name => ({ value: name, label: name, count: count(name) }))]} /></div>}
+      {rows.length > 0 && <div className="mb-4 flex flex-wrap gap-2">
+        <Segmented label="Who" value={who} onChange={setWho} options={WHO_OPTIONS.map(option => ({ ...option, count: rows.filter(record => recordIsFor(record, option.value)).length }))} />
+        <Segmented label="Status" value={status} onChange={setStatus} options={[{ value: "all", label: "All", count: forWho.length }, ...statuses.map(name => ({ value: name, label: name, count: count(name) }))]} />
+      </div>}
       <DataTable loading={loading} caption="Attendance records" columns={["Person", "Course", "Batch", "Status", "Marked at", "Method"]} rowKeys={visible.map(record => record.id)} rows={visible.map(record => [
         <Identity name={record.person_name} detail={record.person_code} />,
         record.course_name || courseName(data.courses, record.course_id),
@@ -63,7 +70,7 @@ export default function Reports({ data }) {
         <StatusBadge status={record.status} />,
         <span className="whitespace-nowrap tabular-nums">{formatTime(record.marked_time)}</span>,
         methodLabel(record.recognition_method)
-      ])} empty={rows.length ? <EmptyState icon={CalendarSearch} title="No records match" message="Try another search or status." action={<Button variant="outline" size="sm" onClick={() => { setQuery(""); setStatus("all"); }}>Clear</Button>} /> : <EmptyState icon={CalendarSearch} title="No attendance on this date" message="Choose another date, course or batch and press Apply." />} />
+      ])} empty={rows.length ? <EmptyState icon={CalendarSearch} title="No records match" message="Try another search, person type or status." action={<Button variant="outline" size="sm" onClick={() => { setQuery(""); setStatus("all"); setWho("all"); }}>Clear</Button>} /> : <EmptyState icon={CalendarSearch} title="No attendance on this date" message="Choose another date, course or batch and press Apply." />} />
     </Card>
 
     <HandCorrections data={data} shown={shown} onRecord={record => { if (shown && record.attendance_date === shown.date) setRows(current => withRecord(current, record)); }} />
@@ -110,7 +117,8 @@ function HandCorrections({ data, shown, onRecord }) {
     return () => { current = false; };
   }, [sessionId]);
   const session = sessions.find(item => String(item.id) === sessionId);
-  const students = data.people.filter(person => person.person_type === "student" && Number(person.course_id) === Number(shown?.courseId) && Number(person.batch_id) === Number(shown?.batchId));
+  // The batch's active students, plus anyone with a record in this session, whose mark can be corrected.
+  const students = scopePeople(data.people, { type: "regular", courseId: shown?.courseId, batchId: shown?.batchId }, records);
   const marked = (record, student) => {
     setRecords(current => withRecord(current, record));
     onRecord(record);

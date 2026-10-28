@@ -16,6 +16,7 @@ from app.models.course import Course, CourseBatch
 from app.models.person import Person
 from app.schemas.person_schema import PersonCreate
 from app.services import audit_service, course_service
+from app.services.attendance_code_service import assign_code
 from app.services.person_service import build_person, person_with_code
 from app.utils.spreadsheet import (
     CSV_MEDIA_TYPE, MAX_DATA_ROWS, MAX_FILE_BYTES, XLSX_MEDIA_TYPE, ImportFileError, Sheet, build_csv, build_template,
@@ -362,8 +363,19 @@ def _person_plan(db: Session, spec: ImportSpec):
     # An id is unique across students, staff and members together.
     existing = {code.lower(): person_type for code, person_type in db.query(Person.person_code, Person.person_type)}
 
-    def make(fields):
+    # Every attendance code in the database, read once, and the ones this upload gives out are added
+    # as they are: two rows of one upload never get the same code, and no row one that is in use.
+    # The unique index still refuses a code someone else gave out meanwhile (see _save).
+    codes = {code for (code,) in db.query(Person.attendance_code).filter(Person.attendance_code.is_not(None))}
+
+    def build(fields):
         return build_person(db, PersonCreate(**fields))[0]
+
+    def make(fields):
+        # Only a row that is being saved gets a code; checking a row (below) draws none.
+        person = build(fields)
+        assign_code(db, person, codes, check_db=False)
+        return person
 
     def check(values, cells):
         problems = []
@@ -430,7 +442,7 @@ def _person_plan(db: Session, spec: ImportSpec):
         if not problems:
             # The same rules as POST /users/create have the last word on every row.
             try:
-                make(fields)
+                build(fields)
             except FieldError as error:
                 problems.append((column_of.get(error.field, error.field), error.message))
             except HTTPException as error:

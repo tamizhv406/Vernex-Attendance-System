@@ -1,4 +1,4 @@
-import { ArrowLeft, BarChart3, BookOpen, GraduationCap, History, KeyRound, Layers3, LayoutDashboard, LifeBuoy, MessageSquareWarning, ScanFace, ScanLine, Settings, ShieldCheck, UserCheck, UserCog, Users } from "lucide-react";
+import { ArrowLeft, BarChart3, BookOpen, GraduationCap, History, KeyRound, Layers3, LayoutDashboard, LifeBuoy, MessageSquareWarning, ScanFace, ScanLine, ScanQrCode, Settings, ShieldCheck, UserCheck, UserCog, Users } from "lucide-react";
 import { visibleGroups } from "./lib/auth.js";
 
 // The URLs are the ones the app already used; only how they are presented changed.
@@ -17,6 +17,7 @@ export const ROUTES = {
   members: "/users/members",
   enrollment: "/face-enrollment",
   scanner: "/attendance-scanner",
+  qrScanner: "/qr-attendance",
   reports: "/reports",
   myReports: "/my-reports",
   settings: "/settings"
@@ -57,7 +58,8 @@ export const PAGES = {
   changePassword: { label: "Change password", title: "Change password", subtitle: "Choose a new password for this account.", icon: KeyRound },
   dashboard: { label: "Dashboard", title: "Dashboard", subtitle: "Today's attendance at a glance.", icon: LayoutDashboard },
   scanner: { label: "Live Scanner", title: "Live Attendance", subtitle: "Start a session and point the camera at the class.", icon: ScanLine },
-  enrollment: { label: "Face Enrollment", title: "Face Enrollment", subtitle: "Capture a student's reference faces, one pose at a time.", icon: ScanFace },
+  qrScanner: { label: "QR Attendance", title: "QR Attendance", subtitle: "Scan a person's QR code, or type their code.", icon: ScanQrCode },
+  enrollment: { label: "Face Enrollment", title: "Face Enrollment", subtitle: "Capture a person's reference faces, one pose at a time.", icon: ScanFace },
   reports: { label: "Reports", title: "Attendance Records", subtitle: "Filter attendance by course, batch and date.", icon: BarChart3 },
   students: { label: "Students", title: "Students", subtitle: "Students are assigned to a course and a batch.", icon: GraduationCap },
   staff: { label: "Staff", title: "Staff", subtitle: "Staff accounts kept alongside students.", icon: UserCheck },
@@ -72,7 +74,7 @@ export const NAV_GROUPS = [
   { label: "Super Admin", items: ["superAdmin"] },
   { label: "Overview", items: ["dashboard"] },
   { label: "Manage", items: ["courses", "batches", "students", "staff", "members"] },
-  { label: "Attendance", items: ["enrollment", "scanner", "reports"] },
+  { label: "Attendance", items: ["enrollment", "scanner", "qrScanner", "reports"] },
   { label: "System", items: ["myReports", "settings"] }
 ];
 
@@ -103,7 +105,7 @@ export function navEntry(id, portal) {
 
 // The phone bar shows four destinations around the scanner button; everything else is under "More".
 // In the portal there is no scanner: its four pages, and the way back under "More".
-export const MOBILE_NAV = { left: ["dashboard", "students"], center: "scanner", right: ["enrollment"] };
+export const MOBILE_NAV = { left: ["dashboard", "students"], center: "scanner", right: ["enrollment", "qrScanner"] };
 export const PORTAL_MOBILE_NAV = { left: ["superAdmin", "portalAdmins"], center: null, right: ["portalIssues", "portalAudit"] };
 
 export const PERSON_CONFIG = {

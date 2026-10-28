@@ -1,9 +1,31 @@
-from sqlalchemy import create_engine
+from pathlib import Path
+
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 from app.config import settings
+
+BACKEND_DIR = Path(__file__).resolve().parents[1]
+MISSING_DATABASE = (
+    "The database file {path} does not exist, and the backend does not create an empty one: nobody could "
+    "log in to it. Check DATABASE_URL in backend\\.env. For a new installation, create the database and its "
+    "first super admin with:  .venv\\Scripts\\python scripts\\create_super_admin.py  (in backend\\)"
+)
+NO_LOGIN_ACCOUNTS = (
+    "The database {path} has no login accounts, so nobody could log in. If it is not the database you "
+    "use, correct DATABASE_URL in backend\\.env. If it is a new one, create its first super admin with:  "
+    ".venv\\Scripts\\python scripts\\create_super_admin.py  (in backend\\)"
+)
+
+
+def sqlite_file(url: str) -> Path | None:
+    """The file a SQLite URL opens, or None: another kind of database, or one in memory."""
+    parsed = make_url(url)
+    if not parsed.drivername.startswith("sqlite") or parsed.database in (None, "", ":memory:") or parsed.database.startswith("file:"):
+        return None
+    return Path(parsed.database)
 
 
 def clean_database_url(raw_url: str) -> str:
@@ -13,6 +35,12 @@ def clean_database_url(raw_url: str) -> str:
     parsed = make_url(url)
     if parsed.host and "@" in parsed.host:
         raise ValueError("DATABASE_URL host contains '@'. Your password likely has an unencoded '@'. Encode '@' as '%40' and '%' as '%25'.")
+    path = sqlite_file(url)
+    if path is not None and not path.is_absolute():
+        # A relative SQLite path is the backend folder's, wherever the process starts. Until October 2026
+        # it was the current folder's: the backend (started in backend\) and create_super_admin.py (run
+        # from the project folder, as setup.bat says) each opened a file of their own.
+        url = parsed.set(database=str((BACKEND_DIR / path).resolve())).render_as_string(hide_password=False)
     return url
 
 
@@ -42,6 +70,32 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 class Base(DeclarativeBase):
     pass
+
+
+def require_database_file(url: str | None = None):
+    """When the backend starts: a SQLite file that is not there is a wrong DATABASE_URL, not a new database.
+
+    SQLite would create it empty, and the backend would start on it with nobody able to log in. The
+    setup scripts (create_super_admin.py, init_db.py) still create a new database; the backend does not.
+    """
+    path = sqlite_file(url or DATABASE_URL)
+    if path is not None and not path.exists():
+        raise RuntimeError(MISSING_DATABASE.format(path=path))
+
+
+def require_login_accounts(bind=None):
+    """When the backend starts, after the schema: a SQLite database without one login account is refused.
+
+    Only SQLite: a PostgreSQL database is set up with migrations and its own checks (scripts/check_database.py).
+    """
+    bind = bind or engine
+    path = sqlite_file(bind.url.render_as_string(hide_password=False))
+    if path is None:
+        return
+    with bind.connect() as connection:
+        found = inspect(connection).has_table("admin_accounts") and connection.execute(text("SELECT 1 FROM admin_accounts LIMIT 1")).first()
+    if not found:
+        raise RuntimeError(NO_LOGIN_ACCOUNTS.format(path=path))
 
 
 def get_db():

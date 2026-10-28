@@ -1,7 +1,9 @@
 # Vernex Smart Attendance
 
-Face-recognition attendance for courses and batches. A phone (or any webcam) streams live video to the
-backend, which finds every face in the frame, matches it against enrolled students, and marks attendance.
+Face-recognition and QR-code attendance for courses and batches, staff and members. A phone (or any
+webcam) streams live video to the backend, which finds every face in the frame, matches it against the
+enrolled people of the session, and marks attendance. Everyone also has a QR card with a random
+attendance code, which the QR Attendance page scans (or a desk types) into the same register.
 
 - `backend/` — FastAPI + SQLAlchemy, Supabase PostgreSQL, DeepFace (YOLOv8 face detector + Facenet512)
 - `frontend/` — React + Vite admin dashboard, enrollment camera and live scanner
@@ -46,7 +48,7 @@ its memory. For use beyond your own computer, serve the built console with `depl
 (HTTPS, security headers) instead of the development server; `docs/RUNBOOK.md` has the steps,
 backups, secret rotation and the least-privilege database account. Wait for `face models ready` in the log (about 30 seconds;
 the first ever start also downloads ~100 MB of model weights). http://localhost:8000/health answers
-`"status":"starting"` until then and `"status":"ok"` after. The backend refuses to start without a
+`"status":"starting"` until then and `"status":"ok"` after, or `"status":"failed"` if the models could not be loaded (the log says why). The backend refuses to start without a
 `JWT_SECRET`, and nobody can log in before a super admin exists: see "Logging in and accounts".
 
 ### 2. Frontend (second terminal)
@@ -220,7 +222,7 @@ and what happened (10 to 4000 characters).
 
 ### What stays open
 
-Without a login the backend answers only `GET /health` (one word: `ok`, `starting` or `unavailable`)
+Without a login the backend answers only `GET /health` (one word: `ok`, `starting`, `failed` or `unavailable`)
 and the login routes. Everything else answers `401`. `GET /health/details` (database and face
 models) needs a login. `/docs` and `/openapi.json` are switched off unless `API_DOCS=true` is set in
 `backend/.env`. An error nobody expected is answered with a generic sentence and a reference; what
@@ -239,8 +241,10 @@ went wrong is written to the backend's log under that reference, without the dat
 ## Workflow
 
 1. **Courses → Batches → Students.** Create a course, a batch under it, then students assigned to both.
-2. **Face Enrollment.** Pick course, batch and student, choose the enrollment type and press Start
-   Enrollment. **Quick** (the default) takes three poses: look straight, turn left, turn right.
+2. **Face Enrollment.** Choose **Students**, **Staff** or **Members**. For students pick course,
+   batch and student; staff and members are listed in full (no course or batch), with a search by name
+   or ID. Tick the consent box (the person, or for a minor a parent or guardian, agreed), choose the
+   enrollment type and press Start Enrollment. **Quick** (the default) takes three poses: look straight, turn left, turn right.
    **Full** takes five (front, left, right, close, far). Only the student being enrolled may be in view.
    Capture starts as soon as the camera delivers a picture. A pose is taken from a short burst: the
    face has to stay in the oval, in place, through three good frames in a row, and the sharpest of
@@ -249,7 +253,8 @@ went wrong is written to the backend's log under that reference, without the dat
    same person as the frames before. A refused frame says why ("Move closer", "Improve lighting",
    "One person at a time", "Pose not accepted" ...). Nothing is saved until every pose passes, and the
    previous enrollment stays in use until then. A face that is already enrolled under another person is refused.
-3. **Attendance Scanner.** Pick course and batch, optionally a "Late after" time (otherwise the batch's
+3. **Attendance Scanner.** Choose the session: a **Batch class** (pick course and batch), **Staff** (every
+   staff member) or **Members** (every member, marked `visited`). Optionally a "Late after" time (otherwise the batch's
    timetable decides, if it has one), press Start Session, and point the camera at the class.
    Every face in the frame gets its own box and its own verdict: green = identity verified,
    amber = still being verified, red = not verified (unknown person, "Unable to verify identity", or a
@@ -268,7 +273,44 @@ went wrong is written to the backend's log under that reference, without the dat
    lists that day's sessions with the same register. A hand mark always belongs to a session and its
    date, is stored as "By hand" (never as a face scan) and is written to the audit log with who made it
    and what it was before.
-6. **Stop Session**, then see **Attendance Records** for the records by date, course and batch.
+6. **Stop Session**, then see **Attendance Records** for the records by date, course and batch. Staff
+   and member records have no course or batch: leave "All courses" and use the **Who** filter
+   (All / Students / Staff / Members).
+
+**Who belongs to a session** (one rule for face scans, hand marks and codes, in
+`attendance_service.person_in_session`): a batch class takes the people assigned to its course and
+batch (staff and members only when assigned to that batch); a staff session takes staff only; a member
+session takes members only. Anyone else is refused with a sentence saying why, and the face scanner
+only compares faces of the people the session is for.
+
+## Attendance codes and QR cards
+
+Every student, staff member and member has an **attendance code**: 8 random characters (`K7M2-9QXD`,
+from `0-9` and `A-Z` without I, L, O, U), made with Python's `secrets`. It is not the person ID, which is
+short and sequential. A new person gets one at once, by the form or by a spreadsheet upload; people from
+before this version get theirs from the backfill script (see "Database"). The QR on a card holds only
+`VNXATT:` and the code: no name, no ID, nothing else.
+
+- **People pages** (Students, Staff, Members): the code is shown under the person ID. The **QR** button
+  on a row opens the card: download it as `<ID>-qr.png`, print it, or **Replace code** for a lost or
+  shared card. The old code and its QR stop working at once; the audit log says "Attendance code
+  replaced", without either code. A person without a code gets a **Create code** button.
+- **Print QR cards (N)** prints the list as it is filtered (search, course, face): ID-card size
+  (85.6 x 54 mm), 10 to an A4 page, through the browser's print dialog ("Save as PDF" works). More than
+  300 cards asks first.
+- **QR Attendance** (Attendance menu, and the phone's bottom bar): start a batch class, staff or members
+  session, or **join** one already running today for the same scope (for example the face scanner's, on
+  another device). Then scan cards with the camera (back camera first; the QR is read on the device,
+  no picture is sent), or type a code (`XXXX-XXXX`, lowercase and without the hyphen also work; a USB
+  or Bluetooth QR reader types into the same field). Green: marked; blue: already marked; red: the
+  backend's reason (not in this batch, inactive, unknown or replaced code, session stopped); amber: no
+  connection. Nothing is queued to send later. A typed code is written to the audit log like a hand
+  mark; a scanned QR is not, like a face scan. Records say **QR scan** or **Code typed**.
+- `POST /attendance/code/mark` (login required, 120 codes per account per minute) checks the session
+  (running, today), the code, that the person is active and belongs to the session, and writes through
+  the same one-record-per-person rule as the face scanner. Its answers never contain the code.
+- Printed cards work like ID badges: someone holding another person's card can mark them. Face scans,
+  spot checks and **Replace code** keep that in check.
 
 Courses, batches and people can also be added many at a time from a spreadsheet: see
 "Bulk upload" below.
@@ -662,7 +704,10 @@ has, keep the full enrollment available and compare: enroll some students each w
 
 ## Database, backups and upgrades
 
-- The app uses the local SQLite file `backend/vernex_attendance.db` unless `DATABASE_URL` is set.
+- The app uses the local SQLite file `backend/vernex_attendance.db` unless `DATABASE_URL` is set. A relative
+  SQLite path is the `backend` folder's, wherever the process starts. The backend refuses to start on a
+  SQLite file that does not exist or has no login account (a wrong `DATABASE_URL`), instead of opening
+  an empty database; `create_super_admin.py` makes a new one with its first account.
 - **PostgreSQL / Supabase (since October 2026).** The backend no longer creates or changes anything
   when it starts on PostgreSQL. It checks, with reads only, that every table and column it needs is
   there, that the duplicate-attendance index exists, that row level security is on for every table,
@@ -693,9 +738,16 @@ has, keep the full enrollment available and compare: enroll some students each w
   databases, and refuses any other host); otherwise it is skipped.
 - Back it up before any upgrade by copying that file while the backend is stopped. Copies made during
   this work are in `backend/backups/`. To go back, stop the backend and copy a backup over the file.
+- **Attendance codes (migration 010).** On PostgreSQL apply `backend/migrations/010_attendance_codes.sql`
+  (a nullable `attendance_code` column on `user_management` and the unique index
+  `uq_user_management_attendance_code`; it changes no row), then give existing people a code:
+  `python scripts/backfill_attendance_codes.py --dry-run`, then without `--dry-run`. The script refuses
+  to run before 010 is in place, never changes a code someone already has, can be run again, and prints
+  counts only. Until 010 is applied the backend refuses to start and names it.
 - On start (SQLite, or PostgreSQL with `DATABASE_AUTO_UPGRADE=true`) the backend adds what a newer
-  version needs (the `capture_meta` column on `face_embeddings` and a unique index on attendance
-  records) and changes no existing row. If the index cannot be created
+  version needs (the `capture_meta` column on `face_embeddings`, a unique index on attendance
+  records, and the `attendance_code` column with its unique index, after which everyone without a code
+  gets one) and changes no other existing row. If the index cannot be created
   because duplicate records already exist, it says so at startup and leaves the records alone.
   `backend/migrations/004_capture_meta_and_unique_attendance.sql` is the same change as SQL for PostgreSQL.
 - Bulk upload, the contact-number rule and the editing fixes add no table and no column, and change
@@ -797,6 +849,18 @@ be written is not saved either. Two requests on one issue at the same moment (tw
 or a comment and a close) are tested on a SQLite file with real connections: the second waits for the
 first and decides on what it saved. On PostgreSQL the same is done with a row lock
 (`SELECT ... FOR UPDATE`), which has not been run there.
+
+Staff and member enrollment, session scopes and QR attendance are tested the same way:
+`tests/test_face_routes.py` (who face enrollment lists), `tests/test_session_scopes.py` (starting each kind
+of session, who belongs, the face gallery of each scope and an empty one without a scope),
+`tests/test_attendance_codes.py` (the code's format and normalisation, codes on create and import,
+collisions retried against the unique index, replacing a code and its audit entry, who may do it, the
+SQLite upgrade and the backfill script) and `tests/test_code_marking.py` (every answer of
+`/attendance/code/mark`: marked, late, already marked, out of scope, inactive, unknown, not a code,
+stopped or old session, the audit rule, the rate limit, no code in answers or logs).
+`tests/test_postgres.py` checks migration 010 and the backfill on PostgreSQL; it runs in CI, or locally
+with `VERNEX_TEST_POSTGRES_URL`. Camera scanning, printing, PNG downloads and the pages themselves are
+not covered by tests: see the manual checks in `docs/RUNBOOK.md`.
 
 ```powershell
 cd frontend

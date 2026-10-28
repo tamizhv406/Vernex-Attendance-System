@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -18,9 +19,9 @@ from app.models.person import Person
 from app.schemas.attendance_schema import AttendanceMark
 from app.serializers import attendance_record_data, face_enrollment_data, person_data
 from app.services.attendance_service import find_today_record, mark_attendance
-from app.services.face_service import ENROLLMENT_STEPS, build_gallery, detect_faces, embed_faces, identify, judge_liveness, locate_faces, model_label, run_models, unit_rows, usable_vector
+from app.services.face_service import ENROLLMENT_STEPS, ModelsUnavailable, build_gallery, detect_faces, embed_faces, identify, judge_liveness, locate_faces, model_label, run_models, unit_rows, usable_vector
 from app.services.quality_service import MESSAGES, check_pose, check_quality, scan_problem
-from app.services.tracking_service import assign_tracks, challenge_entry, observe, progress, track_score, verify
+from app.services.tracking_service import assign_tracks, challenge_entry, challenges, observe, progress, track_score, verify
 from app.utils.image_utils import ImageTooLarge, decode_base64_image, decode_image_bytes
 from app.utils import rate_limit, timing
 from app.utils.scan_log import log_decision
@@ -50,6 +51,12 @@ CANDIDATE_GAP_SECONDS = 4
 CANDIDATE_MIN_GAP_SECONDS = 0.2
 # An enrollment nobody has sent a frame to for this long is over. Nothing was saved for it.
 ENROLLMENT_IDLE_SECONDS = 180
+# An enrollment left that long ago (the page was closed, so no frame came to end it) is forgotten:
+# it holds the face vectors captured so far. Starting again works as it always did.
+ENROLLMENT_FORGET_SECONDS = 3600
+# How often the stores above are looked through for what can never be used again (forget_what_is_stale).
+FORGET_EVERY_SECONDS = 60
+last_forgotten = float("-inf")
 INSTRUCTIONS = {
     "front": "Look straight",
     "left": "Turn your head slightly to your left",
@@ -68,6 +75,17 @@ def clock():
 async def use_models(function, *args):
     # The models are slow enough to stall every other request if they ran on the event loop.
     return await run_in_threadpool(run_models, function, *args)
+
+
+# A frame answered models_unavailable goes out as 503: the server cannot judge any frame, which is
+# not something the person in front of the camera can fix by trying again.
+MODELS_UNAVAILABLE = "models_unavailable"
+
+
+def models_unavailable(exc):
+    # The reason stays in the server's output; the answer says only what it means for the person.
+    print("face models unavailable:", exc)
+    return MESSAGES[MODELS_UNAVAILABLE]
 
 
 async def read_face_payload(request: Request):
@@ -153,12 +171,24 @@ def client_ms(value):
     return round(value, 1) if 0 <= value < 600_000 else None
 
 
+# Who the enrollment page can list. "admin" is staff (the UI calls them Staff), not a login account.
+ENROLLMENT_PERSON_TYPES = ("student", "admin", "member")
+
+
 @router.get("/enrollment/users")
-def enrollment_users(course_id: int, batch_id: int, db: Session = Depends(get_db)):
-    rows = db.query(Person).filter(
-        Person.course_id == course_id,
-        Person.batch_id == batch_id,
-    ).order_by(Person.full_name.asc()).all()
+def enrollment_users(person_type: str = "student", course_id: int | None = None, batch_id: int | None = None, db: Session = Depends(get_db)):
+    # Students are picked from one batch, as before. Staff and members usually have no batch, so
+    # they are listed in full, narrowed by a course or batch only when the page sends one.
+    if person_type not in ENROLLMENT_PERSON_TYPES:
+        raise HTTPException(400, "Choose students, staff or members.")
+    if person_type == "student" and (course_id is None or batch_id is None):
+        raise HTTPException(400, "Select a course and a batch.")
+    query = db.query(Person).filter(Person.person_type == person_type)
+    if course_id is not None:
+        query = query.filter(Person.course_id == course_id)
+    if batch_id is not None:
+        query = query.filter(Person.batch_id == batch_id)
+    rows = query.order_by(Person.full_name.asc()).all()
     return {"success": True, "message": "Enrollment users fetched", "data": [person_data(row) for row in rows]}
 
 
@@ -187,19 +217,20 @@ def enrollment_steps(mode):
 
 def consent_given(consent: bool = False, db: Session = Depends(get_db)):
     # Face vectors are biometric data. Before anything is captured, whoever enrolls confirms that the
-    # student (or, for a minor, a parent or guardian) agreed; the audit entry of the enrollment says
+    # person (or, for a minor, a parent or guardian) agreed; the audit entry of the enrollment says
     # so (audit_service). A route dependency, so the confirmation is required of every request.
     if not consent:
         raise HTTPException(400, CONSENT_NEEDED)
     db.info["enrollment_consent"] = True
 
 
-CONSENT_NEEDED = "Confirm that the student (or, for a minor, a parent or guardian) agreed to face enrollment."
+CONSENT_NEEDED = "Confirm that the person (or, for a minor, a parent or guardian) agreed to face enrollment."
 
 
 @router.post("/enrollment/start/{person_id}", dependencies=[Depends(consent_given)])
 def start_enrollment(person_id: int, db: Session = Depends(get_db), mode: str | None = None):
     mode, steps = enrollment_steps(mode if isinstance(mode, str) else None)
+    forget_what_is_stale()
     person = db.get(Person, person_id)
     if not person:
         raise HTTPException(404, "Person not found")
@@ -283,6 +314,8 @@ async def enrollment_frame(request: Request, db: Session = Depends(get_db)):
     try:
         result = await handle_enrollment_frame(request, db)
         outcome = "accepted" if result.get("accepted") else "holding" if result.get("holding") else str(result.get("quality_status") or "refused")
+        if outcome == MODELS_UNAVAILABLE:
+            return JSONResponse(result, status_code=503)
         return result
     except HTTPException as exc:
         outcome = f"http_{exc.status_code}"
@@ -329,6 +362,12 @@ async def capture_pose(db, person, enrollment, state, payload):
         state["candidates"] = []
         return reject(message, step, quality_status, progress_now)
 
+    def model_failed(exc):
+        # Models that cannot be loaded are the server's problem, not this frame's.
+        if isinstance(exc, ModelsUnavailable):
+            return refuse(models_unavailable(exc), MODELS_UNAVAILABLE)
+        return refuse(str(exc), "embedding_failed")
+
     image = payload["image"]
     if image is None:
         return refuse("Invalid image")
@@ -339,7 +378,7 @@ async def capture_pose(db, person, enrollment, state, payload):
     try:
         faces = await use_models(locate_faces, image)
     except RuntimeError as exc:
-        return refuse(str(exc), "embedding_failed")
+        return model_failed(exc)
 
     timing.note(width=int(image.shape[1]), height=int(image.shape[0]), faces=len(faces), step=step)
     with timing.stage("quality"):
@@ -387,7 +426,7 @@ async def capture_pose(db, person, enrollment, state, payload):
     try:
         liveness, liveness_score = (await use_models(judge_liveness, image, [tuple(face["box"])]))[0]
     except RuntimeError as exc:
-        return refuse(str(exc), "embedding_failed")
+        return model_failed(exc)
     if liveness == "spoof":
         return refuse(MESSAGES["spoof"], "spoof")
     if liveness != "live":
@@ -396,7 +435,7 @@ async def capture_pose(db, person, enrollment, state, payload):
     try:
         embedding = (await use_models(embed_faces, image, [face]))[0].get("embedding")
     except RuntimeError as exc:
-        return refuse(str(exc), "embedding_failed")
+        return model_failed(exc)
     if not valid_embedding(embedding):
         return refuse(f"Face model returned an unusable vector (expected {settings.face_embedding_size} values).", "embedding_failed")
     same_as_front = similarity(embedding, front["embedding"]) if front else None
@@ -604,15 +643,25 @@ def load_session(db, session_id):
     if cached and clock() - cached[0] < SESSION_TTL_SECONDS:
         return cached[1]
     row = db.get(AttendanceSession, session_id)
-    session = SimpleNamespace(id=row.id, course_id=row.course_id, batch_id=row.batch_id, status=row.status) if row else None
+    session = SimpleNamespace(id=row.id, course_id=row.course_id, batch_id=row.batch_id, status=row.status, session_type=row.session_type) if row else None
     session_cache[session_id] = (clock(), session)
     return session
 
 
-def load_gallery(db, course_id, batch_id):
+# Which kind of person a staff or member session recognizes. Any other session is a batch class.
+SCOPE_PERSON_TYPES = {"staff": "admin", "member_visit": "member"}
+
+
+def load_gallery(db, course_id, batch_id, session_type=None):
     # Live video asks for the same batch several times a second, and the stored vectors are a
     # large download from a remote database, so they are kept in memory for a short while.
-    key = (course_id, batch_id, model_label())
+    # The faces compared are only those that could be marked: everyone of one kind for a staff or
+    # member session, the course and batch for a class. With neither, nobody: a frame without a
+    # scope must never be matched against every enrolled face of every kind.
+    person_type = SCOPE_PERSON_TYPES.get(session_type)
+    if not person_type and not course_id and not batch_id:
+        return build_gallery([])
+    key = (person_type, course_id, batch_id, model_label())
     cached = gallery_cache.get(key)
     if cached and clock() - cached[0] < GALLERY_TTL_SECONDS:
         return cached[1]
@@ -622,14 +671,53 @@ def load_gallery(db, course_id, batch_id):
     ).join(Person, FaceEmbedding.person_id == Person.id).filter(
         FaceEmbedding.is_active == True,
         FaceEmbedding.model_name == model_label(),
+        # Only active people are recognised: pending and inactive ones can never be marked anyway.
+        Person.status == "active",
     )
-    if course_id:
-        query = query.filter(Person.course_id == course_id)
-    if batch_id:
-        query = query.filter(Person.batch_id == batch_id)
+    if person_type:
+        query = query.filter(Person.person_type == person_type)
+    else:
+        if course_id:
+            query = query.filter(Person.course_id == course_id)
+        if batch_id:
+            query = query.filter(Person.batch_id == batch_id)
     gallery = build_gallery(query.all())
     gallery_cache[key] = (clock(), gallery)
     return gallery
+
+
+def forget_person(person_id):
+    # After a person is deleted. SQLite gives the highest id to the next person created, so nothing
+    # remembered under this id may outlive them: not a mark, an enrollment, a challenge or their faces.
+    # (list(...): a hand mark or a code mark may add to these from another thread meanwhile.)
+    pending_enrollments.pop(person_id, None)
+    for key in [key for key in list(marked_today) if key[1] == person_id]:
+        marked_today.pop(key, None)
+    for key in [key for key in list(challenges) if key[1] == person_id]:
+        challenges.pop(key, None)
+    gallery_cache.clear()
+
+
+def forget_what_is_stale(now=None):
+    # Without this the stores of this file only grow while the backend runs. Dropped here is only what
+    # can never be used again: marks of earlier days (the scanner only asks about today), caches past
+    # their time (they would be loaded again anyway) and enrollments abandoned long ago. Today's marks,
+    # running enrollments and fresh caches stay.
+    global last_forgotten
+    now = clock() if now is None else now
+    if now - last_forgotten < FORGET_EVERY_SECONDS:
+        return
+    last_forgotten = now
+    today = today_local()
+    for key in [key for key in list(marked_today) if key[2] < today]:
+        marked_today.pop(key, None)
+    for store, seconds in ((gallery_cache, GALLERY_TTL_SECONDS), (session_cache, SESSION_TTL_SECONDS)):
+        for key, (loaded, _value) in list(store.items()):
+            if now - loaded >= seconds:
+                store.pop(key, None)
+    for person_id, state in list(pending_enrollments.items()):
+        if not state["busy"] and now - state["touched"] > ENROLLMENT_FORGET_SECONDS:
+            pending_enrollments.pop(person_id, None)
 
 
 def marked_status(db, session, person_id):
@@ -642,18 +730,30 @@ def marked_status(db, session, person_id):
     return marked_today.get(key)
 
 
+SESSION_STOPPED = "This session has been stopped. Attendance was not marked."
+
+
+def session_refusal(row):
+    # Why nothing can be written into this session now, in the sentence the screens show, or None.
+    # The one check for the face scanner and for QR codes (attendance_routes.mark_by_code).
+    if not row or row.status != "active":
+        return SESSION_STOPPED
+    if row.session_date and row.session_date != today_local():
+        # A session left running from an earlier day. Its records would carry today's date under
+        # that day's session, so nothing is written into it: today needs a session of its own.
+        return f"This session is for {row.session_date.isoformat()}. Stop it and start a new session for today. Attendance was not marked."
+    return None
+
+
 def mark_for_session(db, session, person_id, confidence, device_name):
     # Called only for a face that has passed every check. Writes the record for the session the
     # scanner is running, after making sure that session has not been stopped in the meantime.
     row = db.get(AttendanceSession, session.id)
-    if not row or row.status != "active":
-        session_cache.pop(session.id, None)
-        return {"result": "not_marked", "attendance_status": None, "newly_marked": False, "message": "This session has been stopped. Attendance was not marked."}
-    if row.session_date and row.session_date != today_local():
-        # A session left running from an earlier day. Its records would carry today's date under
-        # that day's session, so nothing is written into it: today needs a session of its own.
-        return {"result": "not_marked", "attendance_status": None, "newly_marked": False,
-                "message": f"This session is for {row.session_date.isoformat()}. Stop it and start a new session for today. Attendance was not marked."}
+    refusal = session_refusal(row)
+    if refusal:
+        if refusal == SESSION_STOPPED:
+            session_cache.pop(session.id, None)
+        return {"result": "not_marked", "attendance_status": None, "newly_marked": False, "message": refusal}
     record, message = mark_attendance(db, AttendanceMark(
         session_id=session.id,
         person_id=person_id,
@@ -692,6 +792,8 @@ async def recognize(request: Request, db: Session = Depends(get_db)):
         finally:
             scans_in_flight -= 1
         outcome = scan_outcome(response)
+        if response.get("status") == MODELS_UNAVAILABLE:
+            return JSONResponse(response, status_code=503)
         return response
     finally:
         timing.finish(timer, outcome)
@@ -703,12 +805,20 @@ def scan_outcome(response):
     return "+".join(results) if results else str(response.get("status"))
 
 
+def scan_failed(exc):
+    # No faces could be judged in this frame, so nobody in it is marked.
+    if isinstance(exc, ModelsUnavailable):
+        return {"success": False, "recognized": False, "status": MODELS_UNAVAILABLE, "message": models_unavailable(exc), "faces": []}
+    return {"success": False, "recognized": False, "status": "embedding_failed", "message": str(exc)}
+
+
 async def scan_frame(db, payload, image):
     started = clock()
+    forget_what_is_stale(started)
     try:
         faces = await use_models(detect_faces, image)
     except RuntimeError as exc:
-        return {"success": False, "recognized": False, "status": "embedding_failed", "message": str(exc)}
+        return scan_failed(exc)
 
     height, width = image.shape[:2]
     frame = {"width": int(width), "height": int(height)}
@@ -726,7 +836,7 @@ async def scan_frame(db, payload, image):
     if not faces:
         return {"success": True, "recognized": False, "status": "no_face", "message": MESSAGES["no_face"], "frame": frame, "faces": [], "processing_ms": int((clock() - started) * 1000)}
     with timing.stage("gallery"):
-        gallery = load_gallery(db, course_id, batch_id)
+        gallery = load_gallery(db, course_id, batch_id, session.session_type if session else None)
 
     # Every face is judged on its own from here on. A face that is refused at any step is finished
     # with a reason; it never stops, or lends anything to, the other faces in the frame.
@@ -753,7 +863,7 @@ async def scan_frame(db, payload, image):
             continue
         with timing.stage("match"):
             answer = identify(face["embedding"], gallery)
-        item["_answer"], item["_track"], item["_turn"] = answer, track, face.get("turn")
+        item["_answer"], item["_track"], item["_turn"], item["_face"] = answer, track, face.get("turn"), face
         if answer["status"] == "matched":
             named.setdefault(answer["embedding"].person_id, []).append(item)
         elif answer["status"] == "ambiguous":
@@ -796,12 +906,12 @@ async def scan_frame(db, payload, image):
             live = await use_models(judge_liveness, image, boxes)
         except RuntimeError as exc:
             # No verdict is never read as "live": the frame fails and nobody in it is marked.
-            return {"success": False, "recognized": False, "status": "embedding_failed", "message": str(exc)}
+            return scan_failed(exc)
     alive = {id(item): verdict for item, verdict in zip(pending, live)}
     challenge = settings.face_challenge != "off"
 
     for item in results:
-        track, answer, turn = item.pop("_track", None), item.pop("_answer", None), item.pop("_turn", None)
+        track, answer, turn, seen = item.pop("_track", None), item.pop("_answer", None), item.pop("_turn", None), item.pop("_face", {})
         if answer is None:
             # Too small or too poor to judge. It neither adds to nor ends what this face had collected.
             continue
@@ -839,17 +949,24 @@ async def scan_frame(db, payload, image):
             elif state == "turn":
                 direction = challenge_entry(scanner[0], item["person_id"], now)["direction"]
                 item.update(result="challenge", challenge={"action": "turn", "direction": direction}, message=f"{name}: turn your head to your {direction.upper()}")
+            elif state == "retry":
+                # Turned the right way, but the face changed shape as a tilted picture does. Never
+                # an answer, and not held against the person: they are asked to do it again.
+                item.update(confirming=False, result="challenge_retry", message=f"{name}: try again. Keep the same distance from the camera and turn only your head.")
             elif state == "failed":
                 item.update(confirming=False, result="challenge_failed", message=f"{name}: that was not the movement asked for. Wait a moment and follow the instruction.")
             else:
                 item.update(confirming=False, result="locked", message=f"{name}: verification failed several times. Ask the teacher to mark attendance by hand.")
-        if track.get("logged") != (item["result"], item.get("challenge", {}).get("action")) or item["result"] in ("verified", "not_marked"):
+        # Why a challenge answer did not count (wrong_direction or box_changed), with its numbers.
+        note = track.pop("challenge_note", None)
+        if track.get("logged") != (item["result"], item.get("challenge", {}).get("action")) or item["result"] in ("verified", "not_marked") or note:
             # A line when a face's verdict changes, not one per frame.
             track["logged"] = (item["result"], item.get("challenge", {}).get("action"))
             log_decision(
                 event="scan", session_id=scanner[0], scanner=scanner[1], track=track["id"], result=item["result"], status=item["status"],
                 liveness=liveness, liveness_score=None if liveness_score is None else round(liveness_score, 4),
-                turn=None if turn is None else round(turn, 4), challenge=item.get("challenge"),
+                turn=None if turn is None else round(turn, 4), challenge=item.get("challenge"), challenge_note=note,
+                detection_confidence=None if seen.get("detection_confidence") is None else round(float(seen["detection_confidence"]), 4), eyes=seen.get("eyes"),
                 person_id=answer["embedding"].person_id if answer["embedding"] is not None else None,
                 score=round(answer["confidence"], 4), runner_up_id=answer["runner_up_id"],
                 runner_up_score=None if answer["runner_up_score"] is None else round(answer["runner_up_score"], 4),

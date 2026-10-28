@@ -1,4 +1,5 @@
 import json
+import sys
 import threading
 
 import cv2
@@ -12,6 +13,16 @@ DeepFaceImportError = None
 liveness_models = None
 # True once warm_up has loaded and run every model. /health reports it.
 models_ready = False
+# Set when loading the models went wrong (a missing package, say): the health checks then say "failed"
+# instead of "starting", which would otherwise never change.
+models_failed = False
+
+
+class ModelsUnavailable(RuntimeError):
+    """The face models cannot be loaded in this server process, so no frame can be judged at all.
+
+    Not a problem with the frame or the face in it: the routes answer it as a server problem
+    (models_unavailable), never as a capture the person should repeat."""
 
 
 def get_deepface():
@@ -19,19 +30,30 @@ def get_deepface():
     if DeepFace is not None:
         return DeepFace
     if DeepFaceImportError is not None:
-        raise RuntimeError(f"DeepFace failed to import: {DeepFaceImportError}")
+        raise ModelsUnavailable(f"DeepFace failed to import: {DeepFaceImportError}")
     try:
+        utf8_output()
         limit_tensorflow_threads()
         from deepface import DeepFace as ImportedDeepFace
     except Exception as exc:
         DeepFaceImportError = exc
-        raise RuntimeError(f"DeepFace failed to import: {exc}") from exc
+        raise ModelsUnavailable(f"DeepFace failed to import: {exc}") from exc
     DeepFace = ImportedDeepFace
     try:
         compile_recognition_model()
     except Exception as exc:
         print("recognition model runs uncompiled (slower):", exc)
     return DeepFace
+
+
+def utf8_output():
+    # DeepFace's log lines start with an emoji. On Windows, output to a console or a log file is cp1252,
+    # the print raises UnicodeEncodeError and the import fails, so no model ever loads.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
 
 
 def limit_tensorflow_threads():
@@ -131,6 +153,10 @@ def liveness_scores(image, boxes):
                 logits = model(tf.constant(crops)).numpy()
                 exps = np.exp(logits - logits.max(axis=1, keepdims=True))
                 votes += exps / exps.sum(axis=1, keepdims=True)
+    except ModelsUnavailable:
+        raise
+    except ImportError as exc:
+        raise ModelsUnavailable(f"Liveness model failed to import: {exc}") from exc
     except Exception as exc:
         raise RuntimeError(f"Liveness check failed: {exc}") from exc
     # Column 1 is the "real face" class; the two models' votes are averaged.
@@ -203,12 +229,19 @@ def locate_faces(image):
             found = [area for area in detector.detect_faces(image) if float(area.confidence or 0) >= settings.face_detection_confidence]
     except Exception as exc:
         raise RuntimeError(f"Face detection failed: {exc}") from exc
-    return [{
+    return [located(area) for area in found]
+
+
+def located(area):
+    # One detector result as the routes use it. "eyes" says whether the detector gave both eye points:
+    # without them the face is not levelled and no head turn can be measured (turn is None).
+    return {
         "box": [int(area.x), int(area.y), int(area.w), int(area.h)],
         "detection_confidence": float(area.confidence),
         "turn": head_turn({"x": area.x, "w": area.w, "left_eye": area.left_eye, "right_eye": area.right_eye}),
+        "eyes": area.left_eye is not None and area.right_eye is not None,
         "area": area,
-    } for area in found]
+    }
 
 
 def embed_faces(image, faces):
@@ -262,6 +295,7 @@ def detect_faces_legacy(image):
             "embedding": rep["embedding"],
             "detection_confidence": confidence,
             "turn": head_turn(area),
+            "eyes": bool(area.get("left_eye")) and bool(area.get("right_eye")),
         })
     return faces
 
@@ -278,7 +312,7 @@ def head_turn(area):
 
 def warm_up():
     # Loading the models takes around half a minute, so do it at startup instead of on the first scan.
-    global models_ready
+    global models_ready, models_failed
     try:
         blank = np.zeros((160, 160, 3), dtype=np.uint8)
         detect_faces(blank)
@@ -292,8 +326,10 @@ def warm_up():
             embed_crops([np.zeros((height, width, 3), dtype=np.uint8)])
         check_liveness(blank, [(40, 40, 80, 80)])
         models_ready = True
+        models_failed = False
         print("face models ready")
     except Exception as exc:
+        models_failed = True
         print("face models failed to load:", exc)
 
 

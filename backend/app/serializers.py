@@ -162,6 +162,8 @@ def person_data(person, course=None, batch=None):
         "joining_date": iso(person.joining_date),
         "status": person.status,
         "face_enrollment_status": person.face_enrollment_status,
+        # The stored form (K7M29QXD), or None for a row not given one yet.
+        "attendance_code": person.attendance_code,
         "notes": person.notes,
         "created_at": iso(person.created_at),
         "updated_at": iso(person.updated_at),

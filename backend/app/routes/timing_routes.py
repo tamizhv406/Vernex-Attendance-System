@@ -2,6 +2,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.models.attendance import AttendanceSession
+from app.models.course import CourseBatch
 from app.models.timing import Timing
 from app.schemas.timing_schema import TimingCreate, TimingUpdate
 from app.serializers import timing_data
@@ -49,6 +51,12 @@ def delete_timing(timing_id: int, db: Session = Depends(get_db)):
     item = db.get(Timing, timing_id)
     if not item:
         raise HTTPException(404, "Timing not found")
+    # A batch whose timing is gone cannot start a class ("Timing not found"), and SQLite would hand the
+    # id to the next timing created, with other late and absent times.
+    if db.query(CourseBatch).filter(CourseBatch.timing_id == timing_id).first():
+        raise HTTPException(409, "Batches use this timing. Give them another timing before deleting it")
+    if db.query(AttendanceSession).filter(AttendanceSession.timing_id == timing_id).first():
+        raise HTTPException(409, "Timing has attendance sessions and cannot be deleted")
     db.delete(item)
     db.commit()
     return {"success": True, "message": "Deleted successfully", "data": None}

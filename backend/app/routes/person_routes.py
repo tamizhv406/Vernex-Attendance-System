@@ -3,12 +3,15 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.models.attendance import AttendanceRecord
 from app.models.course import Course, CourseBatch
 from app.models.face_embedding import FaceEnrollment
 from app.models.person import Person
 from app.schemas.person_schema import PersonCreate, PersonUpdate
+from app.routes import face_routes
 from app.serializers import person_data
 from app.services import audit_service
+from app.services.attendance_code_service import add_with_code, regenerate_code
 from app.services.person_service import DUPLICATE_ID, build_person, clean_person_fields, ensure_course_batch, person_with_code
 from app.utils.validation import FieldError
 
@@ -45,10 +48,30 @@ def create_person(payload: PersonCreate, db: Session = Depends(get_db)):
         raise HTTPException(error.status, error.message)
     if person_with_code(db, person.person_code):
         raise HTTPException(409, DUPLICATE_ID)
-    db.add(person)
-    commit_or_duplicate(db, person.person_code)
+
+    # Two requests with the same new ID can both pass the check above; the unique index refuses the
+    # second, and that is the conflict it is. Any other refusal was the new attendance code, drawn again.
+    def id_taken(db):
+        if person_with_code(db, person.person_code):
+            raise HTTPException(409, DUPLICATE_ID)
+
+    add_with_code(db, person, conflict=id_taken)
     db.refresh(person)
     return ok("Created successfully", person_data(person, course, batch))
+
+
+@router.post("/{person_id}/attendance-code/regenerate")
+def regenerate_attendance_code(person_id: int, db: Session = Depends(get_db)):
+    # A lost or shared card: the new code replaces the old one at once, so the old QR stops working.
+    # A person without a code yet gets their first one the same way.
+    person = db.get(Person, person_id)
+    if not person:
+        raise HTTPException(404, "Person not found")
+    regenerate_code(db, person)
+    db.refresh(person)
+    course = db.get(Course, person.course_id) if person.course_id else None
+    batch = db.get(CourseBatch, person.batch_id) if person.batch_id else None
+    return ok("Attendance code replaced", person_data(person, course, batch))
 
 
 @router.get("")
@@ -119,9 +142,13 @@ def delete_person(person_id: int, db: Session = Depends(get_db)):
     if not person:
         raise HTTPException(404, "User not found")
     db.query(FaceEnrollment).filter(FaceEnrollment.person_id == person_id).delete()
+    # What ON DELETE SET NULL does on PostgreSQL. SQLite does not apply it, and gives the highest id to
+    # the next person created, who would otherwise inherit these records. Each keeps the code and name.
+    db.query(AttendanceRecord).filter(AttendanceRecord.person_id == person_id).update({AttendanceRecord.person_id: None}, synchronize_session=False)
     db.delete(person)
     # The row is gone after this, so the log keeps what is needed to tell who it was.
     audit_service.record(db, "person.deleted", target_type="person", target_id=person.id,
                          details={"person_code": person.person_code, "full_name": person.full_name, "person_type": person.person_type})
     db.commit()
+    face_routes.forget_person(person_id)
     return ok("Deleted successfully")

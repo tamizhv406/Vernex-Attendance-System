@@ -65,8 +65,11 @@ npm install
 
 ### Database
 
-By default the app uses a **local SQLite file** (`backend\vernex_attendance.db`), created automatically.
-Nothing to configure.
+By default the app uses a **local SQLite file** (`backend\vernex_attendance.db`). Nothing to configure.
+The file is made by `create_super_admin.py` together with the first super admin. The backend itself never
+makes an empty one: if the file in `DATABASE_URL` does not exist, or has no login account, it refuses to
+start and names the file it looked for. A relative SQLite path is the `backend` folder's, wherever the
+backend or a script is started from.
 
 To use a Supabase PostgreSQL database instead, open `backend\.env` and uncomment/fill `DATABASE_URL`
 (Supabase → Connect → Transaction pooler). In the password write `@` as `%40` and `%` as `%25`.
@@ -79,8 +82,9 @@ cd backend
 
 With SQLite the tables are created automatically on first start. With PostgreSQL the backend creates
 and changes nothing: first run `backend\migrations\full_schema.sql` in Supabase's SQL editor (a new,
-empty database) or the numbered files it does not have yet, up to `008_row_level_security.sql`. Then
-check, without changing anything and without showing any secret:
+empty database) or the numbered files it does not have yet, up to `010_attendance_codes.sql`. A database
+from before attendance codes then needs `backend\scripts\backfill_attendance_codes.py` once (see
+`docs/RUNBOOK.md`, Database). Then check, without changing anything and without showing any secret:
 
 ```powershell
 cd backend
@@ -175,13 +179,19 @@ The first time, Windows may ask whether Node.js may use the network — click **
    To add many at once, press **Upload** on any of these pages (and on Staff and Members), download
    the template, fill it in and upload it. Excel (`.xlsx`) and CSV files are accepted; rows with a
    problem are listed with their row number and the rest are imported. Details are in `README.md`.
-2. **Face Enrollment** — pick course, batch and student, press *Start Enrollment*, and follow the five
-   guided shots (front, left, right, close, far). Turn the head about 15° for left/right.
-3. **Attendance Scanner** — pick course and batch, press *Start Session*, point the camera at the class.
+2. **Face Enrollment** — choose Students, Staff or Members. For a student pick course, batch and
+   student; staff and members need no course or batch (search by name or ID). Tick the consent box,
+   press *Start Enrollment*, and follow the guided shots. Turn the head about 15° for left/right.
+3. **Attendance Scanner** — choose Batch class (then course and batch), Staff or Members, press
+   *Start Session*, point the camera at the people.
    Green box = recognized, red box = unknown or "Photo detected".
 4. A student is marked after being matched in 3 frames within 10 seconds (`present`, or `late` after the grace time).
-5. **Stop Session**, then open **Reports**.
-6. Something not working? **Report a problem** — in the top bar on a computer, under **More** on a
+5. **Stop Session**, then open **Reports** (the **Who** filter shows staff and member records).
+6. **QR cards and QR Attendance** — every person has a QR card on their People page (**QR**: download,
+   print, replace a lost card; **Print QR cards** prints the filtered list, 10 per A4 page). On
+   **QR Attendance**, start or join a session and scan cards with the phone's camera, or type a code.
+   The camera needs the **https://** link.
+7. Something not working? **Report a problem** — in the top bar on a computer, under **More** on a
    phone (the scanner page included). Give it a title, a category, a severity and what happened; the
    page you were on and your browser, system and screen size are sent with it. Follow it, and answer,
    in **My reports**. Super admins see every report in the Super Admin portal under **Issues**, where
@@ -196,6 +206,7 @@ More detail (recognition settings, accuracy, issue reporting) is in `README.md`.
 | Problem | Fix |
 | --- | --- |
 | `setup.bat` says Python not found | Reinstall Python 3.10 with "Add to PATH" ticked, then open a new window |
+| `setup.bat` says `backend\.venv` is not a working Python 3.10 environment | It was made with another Python and is never reused. Rename it (e.g. to `.venv-old`) and run `setup.bat` again. `setup.bat /check` only checks, and changes nothing |
 | `pip install` fails on tensorflow / deepface | You're probably on the wrong Python version — install 3.10, delete `backend\.venv`, run `setup.bat` again |
 | Backend stuck before `face models ready` | First start is downloading models; wait, and check the internet connection |
 | `Address already in use` / port 8000 or 5173 busy | Another copy is running — close it, or restart the PC |
@@ -203,6 +214,9 @@ More detail (recognition settings, accuracy, issue reporting) is in `README.md`.
 | Camera doesn't start on phone | Use the **https://** link, accept the certificate, allow camera permission in browser settings |
 | Frontend shows network/API errors | The backend window must be running and show `face models ready` |
 | Face always "Unknown" | Re-enroll in good light, face fully visible, follow all five shots |
+| The page is blank or says a module (`qrcode`, `jsqr`) is missing after an update | The frontend was updated with new packages: `cd frontend`, then `npm install`, and start it again |
+| Backend refuses to start: `user_management has no ... attendance_code` / `migration 010` | Apply `backend\migrations\010_attendance_codes.sql` in Supabase's SQL editor, then run `backend\scripts\backfill_attendance_codes.py` (see `docs/RUNBOOK.md`) |
+| A QR card is refused with "No one has this code" | The code was replaced (a newer card exists) or the card is not from this system: open the person's **QR** and print the current card |
 | Upload says Excel files need `openpyxl` | The backend was updated without its new package. Run `setup.bat` again (or `backend\.venv\Scripts\python -m pip install -r backend\requirements.txt`), then restart the backend. CSV files work in the meantime |
 | A contact number is refused | It must be 10 digits. Spaces, hyphens and `+91` in front are accepted; other country codes, letters and symbols are not |
 | Backend stops with `JWT_SECRET is missing` | Run `backend\.venv\Scripts\python backend\scripts\create_jwt_secret.py`, then start the backend again |

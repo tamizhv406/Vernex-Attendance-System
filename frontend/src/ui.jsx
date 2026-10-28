@@ -300,8 +300,10 @@ export function ConfirmDialog({ open, title, message, confirmLabel = "Delete", b
   </div>);
 }
 
-export function RowActions({ onEdit, onDelete, name }) {
+// extra: more actions before edit and delete, each { icon, label, onClick }. Left out, the row is as it always was.
+export function RowActions({ onEdit, onDelete, name, extra = [] }) {
   return <div className="flex gap-2">
+    {extra.map(action => <IconButton key={action.label} icon={action.icon} label={action.label} onClick={action.onClick} className="h-9 w-9" />)}
     {onEdit && <IconButton icon={EditIcon} label={`Edit ${name}`} onClick={onEdit} className="h-9 w-9" />}
     {onDelete && <IconButton icon={TrashIcon} label={`Delete ${name}`} onClick={onDelete} className="h-9 w-9 hover:border-red-200 hover:bg-red-50 hover:text-red-600" />}
   </div>;

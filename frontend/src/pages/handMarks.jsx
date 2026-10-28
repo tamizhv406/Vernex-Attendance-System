@@ -5,7 +5,7 @@
 import React, { useState } from "react";
 import { Users } from "lucide-react";
 import { markAttendance } from "../lib/api";
-import { handMark, handStatuses, methodLabel, registerRows, statusOf } from "../lib/attendance";
+import { handMark, handStatuses, methodLabel, registerRows, scopeWords, statusOf } from "../lib/attendance";
 import { faceEnrolled, mapAttendance, titleCase } from "../lib/format";
 import { DataTable, EmptyState, Identity, Notice, StatusBadge } from "../ui";
 
@@ -40,18 +40,20 @@ export function HandMarkButtons({ session, student, current, busy, disabled, onM
   </div>;
 }
 
-// The whole register of one session: every student of its batch, what they have, and the buttons.
+// The whole register of one session: everyone it is for (the students of its batch, all staff or all
+// members), what they have, and the buttons.
 export function SessionRegister({ session, students, records, onRecord, loading }) {
   const hands = useHandMarks(session, onRecord);
   const rows = registerRows(students, records, session.id);
+  const words = scopeWords(session.session_type);
   return <div className="grid gap-3">
     {hands.error && <Notice tone="danger" onClose={hands.clearError}>{hands.error}</Notice>}
-    <DataTable loading={loading} caption={`Register of ${session.session_name}`} columns={["Student", "Face", "Status", "How", "Mark by hand"]} rowKeys={rows.map(row => row.student.id)} rows={rows.map(({ student, record }) => [
+    <DataTable loading={loading} caption={`Register of ${session.session_name}`} columns={[words.person, "Face", "Status", "How", "Mark by hand"]} rowKeys={rows.map(row => row.student.id)} rows={rows.map(({ student, record }) => [
       <Identity name={student.full_name} detail={student.person_code} />,
       <StatusBadge status={faceEnrolled(student) ? "Enrolled" : "Pending"} />,
       record ? <StatusBadge status={record.status} /> : <StatusBadge tone="neutral">Not marked</StatusBadge>,
       record ? methodLabel(record.recognition_method) : "-",
       <HandMarkButtons session={session} student={student} current={statusOf(record)} busy={hands.busy === student.id} disabled={hands.busy !== null} onMark={hands.mark} />
-    ])} empty={<EmptyState icon={Users} title="No students in this batch" message="Add students to the batch first." />} />
+    ])} empty={<EmptyState icon={Users} title={words.none} message={words.hint} />} />
   </div>;
 }

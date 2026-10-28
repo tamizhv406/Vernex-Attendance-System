@@ -2,6 +2,7 @@ from contextlib import nullcontext
 
 from sqlalchemy import inspect, text
 from sqlalchemy.engine import Engine
+from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.database import Base, engine
@@ -279,6 +280,10 @@ POSTGRES_REPAIR_STATEMENTS = [
 ROW_SECURITY_TABLES = tuple(table.name for table in Base.metadata.sorted_tables)
 
 
+# The index that keeps two people from sharing an attendance code (migration 010).
+ATTENDANCE_CODE_INDEX = "uq_user_management_attendance_code"
+
+
 class SchemaNotReady(RuntimeError):
     """The database is missing something the backend needs, and the backend may not add it itself."""
 
@@ -333,6 +338,8 @@ def problems_seen_by(connection) -> list:
             problems.append(f"table {table.name} has no column {', '.join(missing)}")
     if "attendance_records" in tables and "uq_attendance_session_person_date" not in {index["name"] for index in inspector.get_indexes("attendance_records")}:
         problems.append("attendance_records has no uq_attendance_session_person_date index (migration 004)")
+    if "user_management" in tables and ATTENDANCE_CODE_INDEX not in {index["name"] for index in inspector.get_indexes("user_management")}:
+        problems.append(f"user_management has no {ATTENDANCE_CODE_INDEX} index (migration 010)")
     if connection.dialect.name == "postgresql":
         open_tables = connection.execute(text(
             "SELECT relname FROM pg_class WHERE relnamespace = 'public'::regnamespace AND relkind = 'r' "
@@ -393,6 +400,18 @@ def upgrade_existing_tables(bind) -> None:
             text("UPDATE admin_accounts SET has_been_super_admin = :yes WHERE role = 'super_admin' AND has_been_super_admin = :no"),
             {"yes": True, "no": False},
         )
+
+        # Attendance codes (migration 010): the column, its unique index, then a code for every person
+        # who has none. Codes already given are never changed.
+        columns = {column["name"] for column in inspect(connection).get_columns("user_management")}
+        if "attendance_code" not in columns:
+            connection.execute(text("ALTER TABLE user_management ADD COLUMN attendance_code VARCHAR(16)"))
+        if ATTENDANCE_CODE_INDEX not in {item["name"] for item in inspect(connection).get_indexes("user_management")}:
+            connection.execute(text(f"CREATE UNIQUE INDEX IF NOT EXISTS {ATTENDANCE_CODE_INDEX} ON user_management (attendance_code)"))
+        from app.services.attendance_code_service import fill_missing_codes
+
+        with Session(bind=connection) as session:
+            fill_missing_codes(session)
 
         index = next(item for item in AttendanceRecord.__table__.indexes if item.name == "uq_attendance_session_person_date")
         if index.name in {item["name"] for item in inspect(connection).get_indexes("attendance_records")}:

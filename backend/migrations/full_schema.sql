@@ -5,7 +5,7 @@
 -- On PostgreSQL the backend does not create or change tables when it starts: it checks that this schema
 -- is in place and refuses to start, naming what is missing, if it is not (DATABASE_AUTO_UPGRADE=true
 -- brings back the old changes at every start). Run this file once on a new, empty database. A database
--- created by an older version is upgraded by the numbered files it does not have yet (001 -> 009);
+-- created by an older version is upgraded by the numbered files it does not have yet (001 -> 010);
 -- don't run this file on such a database. Every statement can be run again safely.
 
 CREATE TABLE IF NOT EXISTS courses (
@@ -76,6 +76,8 @@ CREATE TABLE IF NOT EXISTS user_management (
     status VARCHAR(30) NOT NULL DEFAULT 'active',
     face_enrollment_status VARCHAR(40) NOT NULL DEFAULT 'not_started',
     notes TEXT,
+    -- The random code a QR card holds (010). Never a person's ID; unique, see the index below.
+    attendance_code VARCHAR(16),
     created_at TIMESTAMP NOT NULL DEFAULT now(),
     updated_at TIMESTAMP NOT NULL DEFAULT now()
 );
@@ -86,6 +88,7 @@ CREATE INDEX IF NOT EXISTS ix_user_management_course_id ON user_management (cour
 CREATE INDEX IF NOT EXISTS ix_user_management_batch_id ON user_management (batch_id);
 CREATE INDEX IF NOT EXISTS ix_user_management_category_program ON user_management (category_program);
 CREATE INDEX IF NOT EXISTS ix_user_management_batch_name ON user_management (batch_name);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_user_management_attendance_code ON user_management (attendance_code);
 
 CREATE TABLE IF NOT EXISTS face_enrollments (
     id SERIAL PRIMARY KEY,

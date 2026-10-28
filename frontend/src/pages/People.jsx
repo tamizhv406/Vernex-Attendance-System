@@ -1,11 +1,13 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { Plus, Upload, UserPlus, Users, X } from "lucide-react";
+import { Plus, Printer, QrCode, Upload, UserPlus, Users, X } from "lucide-react";
 import { createPerson, deletePerson } from "../lib/api";
 import { faceEnrolled, statusOptions, toPersonPayload } from "../lib/format";
 import { checkPhone } from "../lib/phone";
+import { SLOW_PRINT, formatCode, printablePeople } from "../lib/qr";
 import { PERSON_CONFIG } from "../routes";
 import { Button, Card, ConfirmDialog, DataTable, EmptyState, FormInput, FormSelect, FormTextarea, Identity, Notice, Page, RowActions, SearchInput, Segmented, StatusBadge } from "../ui";
 import { UploadDialog } from "../upload";
+import { QrCardDialog, usePrintCards } from "./qrCards";
 
 // Only what the list shows is searched. Notes and internal ids are left out of the match.
 function matches(person, query) {
@@ -29,6 +31,11 @@ export default function PeoplePage({ page, data }) {
   const [saving, setSaving] = useState(false);
   const [removing, setRemoving] = useState(null);
   const [deleting, setDeleting] = useState(false);
+  // The person whose QR card is open (their id, so the card follows data.refresh()).
+  const [qrFor, setQrFor] = useState(null);
+  // A print of more than SLOW_PRINT cards, waiting to be confirmed.
+  const [bigPrint, setBigPrint] = useState(null);
+  const cards = usePrintCards();
   const availableBatches = useMemo(
     () => data.batches.filter(batch => Number(batch.course_id) === Number(form.course_id)),
     [data.batches, form.course_id],
@@ -40,7 +47,7 @@ export default function PeoplePage({ page, data }) {
     if (form.batch_id && !availableBatches.some(batch => Number(batch.id) === Number(form.batch_id))) setForm(current => ({ ...current, batch_id: "" }));
   }, [form.batch_id, availableBatches]);
   // Moving between Students, Staff and Members starts each list clean.
-  useEffect(() => { setForm(blank); setErrors({}); setAdding(false); setUploadOpen(false); setQuery(""); setCourseFilter(""); setFaceFilter("all"); setMessage(""); }, [page]);
+  useEffect(() => { setForm(blank); setErrors({}); setAdding(false); setUploadOpen(false); setQuery(""); setCourseFilter(""); setFaceFilter("all"); setMessage(""); setQrFor(null); }, [page]);
   const closeForm = () => { setAdding(false); setForm(blank); setErrors({}); };
   // Typing in a field takes back what was said about it; the number is judged again on leaving the field.
   const setField = (field, value) => { setForm(current => ({ ...current, [field]: value })); setErrors(({ [field]: _fixed, ...rest }) => rest); };
@@ -91,7 +98,15 @@ export default function PeoplePage({ page, data }) {
     }
   };
   const filtered = Boolean(query || courseFilter || faceFilter !== "all");
+  // The cards of the list as it is filtered now: search, course and face filters all count.
+  const printable = printablePeople(rows);
+  const printCards = () => {
+    if (printable.length > SLOW_PRINT) setBigPrint(printable);
+    else cards.print(printable);
+  };
+  const qrPerson = qrFor === null ? null : data.people.find(person => Number(person.id) === Number(qrFor)) || null;
   return <Page title={config.title} subtitle={isStudent ? "Students are assigned to an existing course and batch." : `${config.title} can be assigned to a course and batch.`} actions={<>
+    <Button variant="outline" icon={Printer} disabled={!printable.length} onClick={printCards} title={printable.length ? undefined : "No one in this list has an attendance code yet"}>Print QR cards ({printable.length})</Button>
     <Button variant="outline" icon={Upload} onClick={() => setUploadOpen(true)}>Upload</Button>
     <Button variant={adding ? "outline" : "primary"} icon={adding ? X : UserPlus} onClick={() => setAdding(current => !current)} aria-expanded={adding}>{adding ? "Close form" : `Add ${config.singular.toLowerCase()}`}</Button>
   </>}>
@@ -127,16 +142,19 @@ export default function PeoplePage({ page, data }) {
         ]} />
       </div>
       <DataTable loading={data.loading} caption={config.title} columns={[config.singular, "Contact", "Course", "Batch", "Status", "Face", "Actions"]} rowKeys={rows.map(person => person.id)} rows={rows.map(person => [
-        <Identity name={person.full_name} detail={person.person_code} />,
+        <Identity name={person.full_name} detail={person.attendance_code ? `${person.person_code} · ${formatCode(person.attendance_code)}` : person.person_code} />,
         person.guardian_phone || person.phone || "-",
         person.course_name || "-",
         person.batch_name || "-",
         <StatusBadge status={person.status} />,
         <StatusBadge status={faceEnrolled(person) ? "Enrolled" : "Pending"} />,
-        <RowActions name={person.full_name} onDelete={() => setRemoving(person)} />
+        <RowActions name={person.full_name} extra={[{ icon: QrCode, label: `QR card of ${person.full_name}`, onClick: () => setQrFor(person.id) }]} onDelete={() => setRemoving(person)} />
       ])} empty={filtered ? <EmptyState icon={Users} title={`No ${config.title.toLowerCase()} match`} message="Try another search or clear the filters." action={<Button variant="outline" size="sm" onClick={() => { setQuery(""); setCourseFilter(""); setFaceFilter("all"); }}>Clear filters</Button>} /> : <EmptyState icon={Users} title={`No ${config.title.toLowerCase()} yet`} message={isStudent && !data.courses.length ? "Create a course and a batch first, then add students." : `Add the first ${config.singular.toLowerCase()} to get started.`} action={<Button size="sm" icon={UserPlus} onClick={() => setAdding(true)}>Add {config.singular.toLowerCase()}</Button>} />} />
     </Card>
     <ConfirmDialog open={Boolean(removing)} busy={deleting} title={`Delete ${removing?.full_name || "this person"}?`} message="This removes the person and their enrolled face data. It cannot be undone." onConfirm={remove} onCancel={() => setRemoving(null)} />
+    <QrCardDialog person={qrPerson} onClose={() => setQrFor(null)} onChanged={data.refresh} notify={data.notify} />
+    <ConfirmDialog open={Boolean(bigPrint)} title={`Print ${bigPrint?.length || 0} QR cards?`} message={`That is ${Math.ceil((bigPrint?.length || 0) / 10)} A4 pages. Printing this many may be slow; filtering the list by course or batch prints fewer.`} confirmLabel="Print" onConfirm={() => { cards.print(bigPrint); setBigPrint(null); }} onCancel={() => setBigPrint(null)} />
+    {cards.sheet}
     <UploadDialog kind={page} open={uploadOpen} onClose={() => setUploadOpen(false)} onImported={data.refresh} notify={data.notify} />
   </Page>;
 }

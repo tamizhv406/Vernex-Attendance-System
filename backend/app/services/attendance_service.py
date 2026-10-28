@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from app.models.attendance import AttendanceRecord, AttendanceSession
 from app.models.person import Person
 from app.services import audit_service
-from app.services.sheet_service import sync_attendance_record
+from app.services.sheet_service import queue_attendance_record
 from app.utils.time_utils import now_local, today_local
 
 mark_lock = threading.Lock()
@@ -38,8 +38,9 @@ def mark_attendance(db: Session, payload, by_hand: bool = False):
     with mark_lock:
         record, message = write_attendance(db, payload, by_hand)
     if record and message == "Attendance marked":
-        # Outside the lock: the sheet is a slow network call and must not hold up other students.
-        sync_attendance_record(db, record)
+        # Outside the lock, and in the background: the sheet is a slow network call and must not hold
+        # up this answer or other students.
+        queue_attendance_record(db, record)
         db.refresh(record)
     return record, message
 
@@ -51,6 +52,30 @@ def audit_marked(db: Session, record: AttendanceRecord, previous_status: str | N
     if previous_status:
         details["previous_status"] = previous_status
     audit_service.record(db, "attendance.marked", target_type="attendance_record", target_id=record.id, details=details)
+
+
+def person_in_session(person, session):
+    # The one rule for who may be marked in a session, whether by face, by hand or by code. None
+    # when the person belongs, otherwise the sentence the screen shows. A staff session is for staff
+    # (person_type "admin"), a member session for members. Any other session is a batch class, older
+    # rows included: it is for whoever is assigned to that course and batch, staff and members too.
+    if session.session_type == "staff":
+        return None if person.person_type == "admin" else "Only staff can be marked in a staff session."
+    if session.session_type == "member_visit":
+        return None if person.person_type == "member" else "Only members can be marked in a member session."
+    if person.course_id != session.course_id or person.batch_id != session.batch_id:
+        return f"{person.full_name} is not in this batch."
+    return None
+
+
+def not_active_refusal(person):
+    # Only active people get new attendance records, whatever marks them: a face, a hand or a code.
+    # Pending and inactive people are refused with this sentence. A record they already have stays,
+    # and can still be corrected by hand.
+    if person.status == "active":
+        return None
+    state = "pending" if person.status == "pending" else "inactive"
+    return f"{person.full_name} is {state}. Attendance was not marked."
 
 
 def write_attendance(db: Session, payload, by_hand: bool = False):
@@ -65,7 +90,13 @@ def write_attendance(db: Session, payload, by_hand: bool = False):
     session = db.get(AttendanceSession, payload.session_id) if payload.session_id else None
     expected_course_id = session.course_id if session else payload.course_id
     expected_batch_id = session.batch_id if session else payload.batch_id
-    if person.person_type == "student":
+    if session:
+        refused = person_in_session(person, session)
+        if refused:
+            return None, refused
+    elif person.person_type == "student":
+        # A record written without a session (scripts, older callers): only a student's course and
+        # batch are checked, as they always were.
         if expected_course_id and person.course_id != expected_course_id:
             return None, "Person does not belong to this course"
         if expected_batch_id and person.batch_id != expected_batch_id:
@@ -76,6 +107,9 @@ def write_attendance(db: Session, payload, by_hand: bool = False):
         existing.duplicate_flag = True
         db.commit()
         return existing, "Already marked"
+    refused = not_active_refusal(person)
+    if refused:
+        return None, refused
 
     # Who is logged in, which app/security.py puts on the database session of every request. A
     # record written through the API is signed with that account whatever the client sent; only

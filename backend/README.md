@@ -1,4 +1,4 @@
-# Vernex Smart Attendance AI Backend
+# Vernex Smart Attendance Backend
 
 FastAPI backend for a local-first attendance MVP using Supabase PostgreSQL.
 
@@ -212,7 +212,10 @@ Every route needs a login except `GET /health`, `POST /auth/login`, `POST /auth/
   teacher's choice; for a student who is already marked it corrects the one record ("Attendance
   updated", with the previous status in the audit log). Without `status` the session decides:
   `visited` for a member visit, otherwise `present`, or `late`/`absent` by the session's times on the
-  session's own day
+  session's own day.
+  A person who does not exist is `404`. One who exists but may not be marked in this session (pending,
+  inactive, another batch, the wrong kind of session) is `409` with the reason, as for a QR code; nothing
+  is written. (Until October 2026 those were `404`, and `200` with `success: false` for mark-absent.)
 - Face frames (`/face/...`): at most `FACE_MAX_UPLOAD_BYTES` (2,000,000) per request, refused with
   `413` before it is read (`411` for a body of unknown length), and at most `FACE_MAX_IMAGE_PIXELS`
   (4096 x 4096) once unpacked (`413`). An id that is not a whole number is `400` and names the field;
@@ -223,7 +226,11 @@ Every route needs a login except `GET /health`, `POST /auth/login`, `POST /auth/
 - `POST /face/enrollment/complete/{person_id}`
 - `GET /face/enrollment/status/{person_id}`
 - `POST /face/recognize`
-- `POST /sheet/sync-pending`
+- `POST /sheet/sync-pending`: sends again every record still `pending`. With `GOOGLE_SCRIPT_URL` set, each
+  new mark is copied to the sheet in the background and answered without waiting for it. A record the
+  sheet could not take stays `pending` (or `failed` if the sheet refused it), with the reason in
+  `sheet_sync_logs`. A record is never sent by two senders at once: `count` is what this request sent,
+  `skipped` what the background sender (or another request) was sending or had just sent.
 - `GET /sheet/status`
 
 The face endpoints run DeepFace (YOLOv8 detector + Facenet512). See the root `README.md` for the full run guide, workflow and face settings.

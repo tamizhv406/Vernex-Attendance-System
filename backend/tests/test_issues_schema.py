@@ -255,8 +255,8 @@ def test_the_migration_can_be_run_twice_and_touches_nothing_stored():
     assert not any("POLICY" in statement.upper() for statement in listed)
 
 
-def test_the_full_schema_says_it_follows_the_migrations_up_to_009():
-    assert "001 -> 009" in (MIGRATIONS / "full_schema.sql").read_text(encoding="utf-8")
+def test_the_full_schema_says_it_follows_the_migrations_up_to_010():
+    assert "001 -> 010" in (MIGRATIONS / "full_schema.sql").read_text(encoding="utf-8")
 
 
 def test_every_table_gets_row_level_security_from_the_migrations_and_the_backend():

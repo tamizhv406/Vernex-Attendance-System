@@ -7,10 +7,12 @@ from app.schemas.timing_schema import text
 
 
 class AttendanceSessionCreate(BaseModel):
-    session_name: text(140)
+    # A batch class ("regular") needs a name, a course and a batch. A staff or member session has no
+    # course or batch and is named for its kind when no name is sent. The route checks which is which.
+    session_name: text(140) | None = None
     session_type: text(40)
-    course_id: int
-    batch_id: int
+    course_id: int | None = None
+    batch_id: int | None = None
     category_program: text(120) | None = None
     batch_name: text(120) | None = None
     timing_id: int | None = None
@@ -37,6 +39,17 @@ class AttendanceMark(BaseModel):
     # Marking by hand only: the status the teacher chose. Without it the session decides (see
     # attendance_service.write_attendance); with it, a record that already exists is corrected.
     status: Literal["present", "late", "absent", "visited"] | None = None
+
+
+class CodeMark(BaseModel):
+    # Attendance by QR code (method "qr_scan") or by a code typed at the desk ("code_entry").
+    session_id: int
+    # The raw scanned text or the typed code. Its length is checked by the route, not here: a
+    # validation error would quote the input back, and a code is never repeated in an answer.
+    code: str
+    method: Literal["qr_scan", "code_entry"]
+    device_name: text(120) | None = None
+    scanner_id: text(80) | None = None
 
 
 class AttendanceOut(BaseModel):

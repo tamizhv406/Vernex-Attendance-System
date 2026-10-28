@@ -21,7 +21,8 @@ MESSAGES = {
     "busy": "Still checking the previous frame.",
     "save_failed": "The enrollment could not be saved. Hold this pose to try again.",
     "ambiguous": "Unable to verify identity.",
-    "transparent_specs": "Transparent spectacles detected. You can continue, but removing specs improves enrollment accuracy.",
+    "models_unavailable": "The face models are not loaded on the server, so this frame was not checked. This is not a problem with the face or the camera. Ask whoever runs the server to check it.",
+    "transparent_specs":"Transparent spectacles detected. You can continue, but removing specs improves enrollment accuracy.",
 }
 
 

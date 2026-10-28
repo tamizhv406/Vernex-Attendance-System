@@ -2,8 +2,10 @@ import React, { useEffect, useState } from "react";
 import { Check, Glasses, Info as InfoIcon, Loader2, ScanFace, Sun, TriangleAlert, UserRound, Users } from "lucide-react";
 import { CameraPlaceholder, CameraView, useCamera } from "../camera";
 import { cancelFaceEnrollment, getEnrollmentUsers, sendEnrollmentFrame, startFaceEnrollment } from "../lib/api";
+import { MODELS_UNAVAILABLE_TEXT, modelsUnavailable } from "../lib/camera";
+import { enrollmentQuery, enrollmentText, groupOptions, matchesPerson, pendingText } from "../lib/enrollment";
 import { faceEnrolled, mapPerson, titleCase } from "../lib/format";
-import { Button, Card, DataTable, EmptyState, FormSelect, Identity, Notice, Page, Segmented, StatusBadge } from "../ui";
+import { Button, Card, DataTable, EmptyState, FormSelect, Identity, Notice, Page, SearchInput, Segmented, StatusBadge } from "../ui";
 
 const ENROLLMENT_STEPS = ["front", "left", "right", "close", "far"];
 const ENROLLMENT_FIRST_STEP = { step: "front", instruction: "Look straight", progress: 0 };
@@ -34,11 +36,14 @@ const MODES = [
 ];
 
 export default function FaceEnrollment({ data }) {
+  // "students", "staff" or "members". Students are picked from a batch; the others are listed in full.
+  const [group, setGroup] = useState("students");
+  const [query, setQuery] = useState("");
   const [courseId, setCourseId] = useState("");
   const [batchId, setBatchId] = useState("");
-  const [students, setStudents] = useState([]);
-  const [loadingStudents, setLoadingStudents] = useState(false);
-  const [studentId, setStudentId] = useState("");
+  const [people, setPeople] = useState([]);
+  const [loadingPeople, setLoadingPeople] = useState(false);
+  const [personId, setPersonId] = useState("");
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
   const [capture, setCapture] = useState(null);
@@ -49,38 +54,63 @@ export default function FaceEnrollment({ data }) {
   const [tick, setTick] = useState(false);
   // "quick": the few poses the backend is set to (front, left, right). "guided": all five.
   const [mode, setMode] = useState("quick");
-  // Face vectors are biometric data: nothing is captured before this is confirmed, for each student.
+  // Face vectors are biometric data: nothing is captured before this is confirmed, for each person.
   const [consent, setConsent] = useState(false);
-  useEffect(() => { setConsent(false); }, [studentId]);
+  useEffect(() => { setConsent(false); }, [personId]);
   const [steps, setSteps] = useState(ENROLLMENT_STEPS);
-  // Students enroll their own face, so start on the camera that looks at them.
+  // People enroll their own face, so start on the camera that looks at them.
   const camera = useCamera(Boolean(capture), "user");
+  const text = enrollmentText(group);
   const batches = data.batches.filter(batch => Number(batch.course_id) === Number(courseId));
+  // Switching between students, staff and members starts the choice over.
+  const chooseGroup = next => {
+    if (next === group) return;
+    setGroup(next);
+    setCourseId("");
+    setBatchId("");
+    setQuery("");
+    setPeople([]);
+    setPersonId("");
+    setConsent(false);
+    setFinished(null);
+  };
   useEffect(() => {
     setBatchId("");
-    setStudents([]);
-    setStudentId("");
+    setPeople([]);
+    setPersonId("");
   }, [courseId]);
   useEffect(() => {
-    if (!courseId || !batchId) {
-      setStudents([]);
-      setStudentId("");
+    const wanted = enrollmentQuery(group, courseId, batchId);
+    if (!wanted) {
+      setPeople([]);
+      setPersonId("");
       return;
     }
-    setLoadingStudents(true);
-    getEnrollmentUsers(courseId, batchId)
+    // A list asked for before the last switch must not replace the one asked for after it.
+    let current = true;
+    setLoadingPeople(true);
+    getEnrollmentUsers(wanted)
       .then(rows => {
+        if (!current) return;
         const mapped = (rows || []).map(mapPerson);
-        setStudents(mapped);
-        setStudentId(mapped[0]?.id || "");
+        setPeople(mapped);
+        setPersonId(mapped[0]?.id || "");
       })
-      .catch(err => setMessage(err.message || "Unable to load enrollment users."))
-      .finally(() => setLoadingStudents(false));
-  }, [courseId, batchId]);
-  useEffect(() => { setCapture(null); setHint(""); setHeadline(""); setFinished(null); }, [studentId]);
-  const selected = students.find(student => Number(student.id) === Number(studentId));
+      .catch(err => { if (current) setMessage(err.message || "Unable to load enrollment users."); })
+      .finally(() => { if (current) setLoadingPeople(false); });
+    return () => { current = false; };
+  }, [group, courseId, batchId]);
+  useEffect(() => { setCapture(null); setHint(""); setHeadline(""); setFinished(null); }, [personId]);
+  const visible = people.filter(person => matchesPerson(person, query));
+  const selected = people.find(person => Number(person.id) === Number(personId));
+  // The search narrows the select too, so the chosen person is always one the select shows.
+  const search = value => {
+    setQuery(value);
+    const shown = people.filter(person => matchesPerson(person, value));
+    if (!shown.some(person => Number(person.id) === Number(personId))) setPersonId(shown[0]?.id || "");
+  };
   const start = async () => {
-    if (!selected) { setMessage("Select course and batch to start enrollment."); return; }
+    if (!selected) { setMessage(text.missing); return; }
     setBusy(true);
     setMessage("");
     try {
@@ -116,7 +146,7 @@ export default function FaceEnrollment({ data }) {
     let roundtrip = null;
     const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
     const run = async () => {
-      // The first pose starts the moment the camera delivers a picture: the student is already
+      // The first pose starts the moment the camera delivers a picture: the person is already
       // looking at it. Later poses leave a moment to read the new instruction and move.
       if (step !== steps[0]) await wait(1200);
       while (!stopped) {
@@ -148,7 +178,7 @@ export default function FaceEnrollment({ data }) {
                 setCapture(null);
                 setHint("");
                 setFinished(selected.full_name);
-                setStudents(rows => rows.map(row => row.id === selected.id ? { ...row, face_enrollment_status: "completed" } : row));
+                setPeople(rows => rows.map(row => row.id === selected.id ? { ...row, face_enrollment_status: "completed" } : row));
                 data.notify(`Face enrollment completed for ${selected.full_name}.`);
                 await data.refresh();
               } else {
@@ -167,6 +197,15 @@ export default function FaceEnrollment({ data }) {
           } catch (err) {
             if (stopped) return;
             setHolding(false);
+            if (modelsUnavailable(err)) {
+              // The server cannot check any frame: not the person's fault, and trying again will not help.
+              cancelFaceEnrollment(selected.id).catch(() => {});
+              setCapture(null);
+              setHint("");
+              setHeadline("");
+              setMessage(MODELS_UNAVAILABLE_TEXT.enrollment);
+              return;
+            }
             if (err.payload?.accepted === false) {
               // The backend refused this frame and says why (no face, blurry, too far...), so show it and try again.
               failures = 0;
@@ -194,19 +233,34 @@ export default function FaceEnrollment({ data }) {
   }, [step]);
   const cancel = () => { cancelFaceEnrollment(selected.id).catch(() => {}); setCapture(null); setHint(""); setHeadline(""); };
   const stepIndex = capture ? Math.max(0, steps.indexOf(capture.step)) : 0;
-  const pending = students.filter(student => !faceEnrolled(student)).length;
+  const pending = people.filter(person => !faceEnrolled(person)).length;
   // Green while the backend is collecting steady frames, amber when it refused one, plain after a pose was taken.
   const feedback = holding ? { box: "bg-emerald-50 text-emerald-800 ring-emerald-600/15", icon: Loader2, spin: true } : headline ? { box: "bg-amber-50 text-amber-800 ring-amber-600/20", icon: TriangleAlert } : { box: "bg-brand-50 text-brand-700 ring-brand-600/15", icon: InfoIcon };
 
-  return <Page title="Face Enrollment" subtitle="Choose a student and an enrollment type, then follow the poses. Capture is automatic.">
+  const forStudents = group === "students";
+  const listReady = Boolean(enrollmentQuery(group, courseId, batchId));
+  const searchMiss = Boolean(people.length && !visible.length);
+  return <Page title="Face Enrollment" subtitle="Choose a person and an enrollment type, then follow the poses. Capture is automatic.">
     {message && <Notice tone="danger" onClose={() => setMessage("")}>{message}</Notice>}
     <div className="grid grid-cols-1 gap-5 xl:grid-cols-[minmax(0,.8fr)_minmax(0,1.2fr)]">
       <div className="space-y-5">
-        <Card title="1. Choose the student" subtitle="Only people in the selected batch are listed.">
+        <Card title="1. Choose the person" subtitle={text.scope}>
           <div className="grid gap-4">
-            <FormSelect label="Course" value={courseId} onChange={e => setCourseId(e.target.value)} disabled={Boolean(capture)} options={data.courses.map(course => ({ value: course.id, label: course.course_name }))} empty="Create a course first" />
-            <FormSelect label="Batch" value={batchId} onChange={e => setBatchId(e.target.value)} disabled={Boolean(capture)} options={batches.map(batch => ({ value: batch.id, label: batch.batch_name }))} empty={courseId ? "Create a batch under this course" : "Select course first"} />
-            <FormSelect label="Student" value={studentId} onChange={e => setStudentId(e.target.value)} disabled={Boolean(capture) || loadingStudents} options={students.map(student => ({ value: student.id, label: `${student.full_name} - ${student.person_code}` }))} empty={loadingStudents ? "Loading students…" : courseId && batchId ? "No students found in this batch" : "Select course and batch first"} />
+            <div className="grid gap-1.5">
+              <span className="text-[13px] font-semibold text-ink-soft">Who</span>
+              <fieldset disabled={Boolean(capture)} className="disabled:opacity-60">
+                <legend className="sr-only">Who</legend>
+                <Segmented label="Who" value={group} onChange={chooseGroup} options={groupOptions()} />
+              </fieldset>
+            </div>
+            {forStudents ? <>
+              <FormSelect label="Course" value={courseId} onChange={e => setCourseId(e.target.value)} disabled={Boolean(capture)} options={data.courses.map(course => ({ value: course.id, label: course.course_name }))} empty="Create a course first" />
+              <FormSelect label="Batch" value={batchId} onChange={e => setBatchId(e.target.value)} disabled={Boolean(capture)} options={batches.map(batch => ({ value: batch.id, label: batch.batch_name }))} empty={courseId ? "Create a batch under this course" : "Select course first"} />
+            </> : <fieldset disabled={Boolean(capture)} className="disabled:opacity-60">
+              <legend className="sr-only">Search</legend>
+              <SearchInput value={query} onChange={search} placeholder="Search by name or ID" />
+            </fieldset>}
+            <FormSelect label={text.pick} value={personId} onChange={e => setPersonId(e.target.value)} disabled={Boolean(capture) || loadingPeople} options={visible.map(person => ({ value: person.id, label: `${person.full_name} - ${person.person_code}` }))} empty={loadingPeople ? text.loading : !listReady ? "Select course and batch first" : searchMiss ? "No one matches the search" : text.none} />
             <div className="grid gap-1.5">
               <span className="text-[13px] font-semibold text-ink-soft">Enrollment type</span>
               <fieldset disabled={Boolean(capture)} className="disabled:opacity-60">
@@ -219,7 +273,7 @@ export default function FaceEnrollment({ data }) {
               <Identity name={selected.full_name} detail={[selected.person_code, selected.batch_name].filter(Boolean).join(" · ")} />
               <StatusBadge status={faceEnrolled(selected) ? "Enrolled" : "Pending"} />
             </div>}
-            {selected && faceEnrolled(selected) && !capture && <p className="text-xs text-ink-muted">This student already has a face enrolled. It stays in use until a new enrollment is finished.</p>}
+            {selected && faceEnrolled(selected) && !capture && <p className="text-xs text-ink-muted">This person already has a face enrolled. It stays in use until a new enrollment is finished.</p>}
             {selected && !capture && <label className="flex items-start gap-3 rounded-2xl border border-line bg-canvas/60 p-3 text-sm text-ink-soft">
               <input type="checkbox" className="mt-0.5 h-5 w-5 shrink-0 accent-brand-600" checked={consent} onChange={event => setConsent(event.target.checked)} />
               <span><span className="font-semibold text-ink">{selected.full_name} agreed to face enrollment</span> (or, for a minor, a parent or guardian did). Their face is stored as numbers for attendance only, and deleted with their record.</span>
@@ -229,7 +283,7 @@ export default function FaceEnrollment({ data }) {
         </Card>
         <Card title="For a good capture">
           <ul className="grid gap-3 text-sm text-ink-soft">
-            <Tip icon={UserRound}>Only the student being enrolled in view, face inside the oval.</Tip>
+            <Tip icon={UserRound}>Only the person being enrolled in view, face inside the oval.</Tip>
             <Tip icon={Sun}>Face a light source. Avoid a bright window behind.</Tip>
             <Tip icon={Glasses}>Remove sunglasses. Hold still until each pose is taken.</Tip>
           </ul>
@@ -270,19 +324,19 @@ export default function FaceEnrollment({ data }) {
         </div> : finished ? <div className="grid place-items-center rounded-3xl bg-emerald-50 px-6 py-12 text-center ring-1 ring-inset ring-emerald-600/15" role="status">
           <div className="grid h-14 w-14 place-items-center rounded-full bg-emerald-500 text-white shadow-float"><Check size={30} strokeWidth={3} aria-hidden="true" /></div>
           <p className="mt-4 text-lg font-bold tracking-tight text-emerald-900">Enrollment complete</p>
-          <p className="mt-1 max-w-sm text-sm text-emerald-800">{steps.length === 1 ? "The face was" : `All ${steps.length} poses were`} saved for {finished}. They can now be recognized by the scanner. {pending ? `${pending} more in this batch still pending.` : "Everyone in this batch is enrolled."}</p>
-        </div> : <CameraPlaceholder icon={ScanFace} title={selected ? `Ready to enroll ${selected.full_name}` : "Choose a student to begin"} message={selected ? `Press Start enrollment. ${MODES.find(item => item.value === mode).detail}` : "Select a course, a batch and a student on the left."} />}
+          <p className="mt-1 max-w-sm text-sm text-emerald-800">{steps.length === 1 ? "The face was" : `All ${steps.length} poses were`} saved for {finished}. They can now be recognized by the scanner. {pendingText(pending)}</p>
+        </div> : <CameraPlaceholder icon={ScanFace} title={selected ? `Ready to enroll ${selected.full_name}` : "Choose a person to begin"} message={selected ? `Press Start enrollment. ${MODES.find(item => item.value === mode).detail}` : text.choose} />}
       </Card>
     </div>
 
-    <Card title="Students in this batch" subtitle={students.length ? `${students.length - pending} of ${students.length} enrolled` : undefined}>
-      <DataTable loading={loadingStudents} caption="Enrollment queue" columns={["Student", "Course", "Batch", "Face", "Action"]} rowKeys={students.map(student => student.id)} rows={students.map(student => [
-        <Identity name={student.full_name} detail={student.person_code} />,
-        student.course_name || "-",
-        student.batch_name || "-",
-        <StatusBadge status={faceEnrolled(student) ? "Enrolled" : "Pending"} />,
-        <Button variant="outline" size="sm" disabled={Boolean(capture) || Number(student.id) === Number(studentId)} onClick={() => { setStudentId(student.id); scrollTo({ top: 0, behavior: "smooth" }); }}>{Number(student.id) === Number(studentId) ? "Selected" : "Select"}</Button>
-      ])} empty={<EmptyState icon={Users} title={courseId && batchId ? "No students found in this batch" : "Select a course and batch"} message={courseId && batchId ? "Add students to this batch first." : "The students of the batch are listed here."} />} />
+    <Card title={text.list} subtitle={people.length ? `${people.length - pending} of ${people.length} enrolled` : undefined}>
+      <DataTable loading={loadingPeople} caption="Enrollment queue" columns={[text.pick, "Course", "Batch", "Face", "Action"]} rowKeys={visible.map(person => person.id)} rows={visible.map(person => [
+        <Identity name={person.full_name} detail={person.person_code} />,
+        person.course_name || "-",
+        person.batch_name || "-",
+        <StatusBadge status={faceEnrolled(person) ? "Enrolled" : "Pending"} />,
+        <Button variant="outline" size="sm" disabled={Boolean(capture) || Number(person.id) === Number(personId)} onClick={() => { setPersonId(person.id); scrollTo({ top: 0, behavior: "smooth" }); }}>{Number(person.id) === Number(personId) ? "Selected" : "Select"}</Button>
+      ])} empty={<EmptyState icon={Users} title={!listReady ? "Select a course and batch" : searchMiss ? "No one matches the search" : text.none} message={!listReady ? "The students of the batch are listed here." : searchMiss ? "Try another name or ID." : text.noneHint} />} />
     </Card>
   </Page>;
 }

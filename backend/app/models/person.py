@@ -1,4 +1,4 @@
-from sqlalchemy import Date, DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import Date, DateTime, ForeignKey, Index, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -6,6 +6,8 @@ from app.database import Base
 
 class Person(Base):
     __tablename__ = "user_management"
+    # One person per attendance code (migration 010). Rows without a code yet (NULL) do not conflict.
+    __table_args__ = (Index("uq_user_management_attendance_code", "attendance_code", unique=True),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     person_code: Mapped[str] = mapped_column(String(80), unique=True, index=True)
@@ -30,6 +32,9 @@ class Person(Base):
     status: Mapped[str] = mapped_column(String(30), default="active")
     face_enrollment_status: Mapped[str] = mapped_column(String(40), default="not_started")
     notes: Mapped[str | None] = mapped_column(Text)
+    # The random code a QR card holds (app/services/attendance_code_service.py), stored uppercase without
+    # the hyphen. Never chosen by a client. NULL only until a row made before migration 010 is given one.
+    attendance_code: Mapped[str | None] = mapped_column(String(16))
     created_at: Mapped[DateTime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[DateTime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 

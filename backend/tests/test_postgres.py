@@ -98,9 +98,48 @@ def test_full_schema_gives_a_new_database_everything_the_backend_checks_for(migr
 def test_the_numbered_migrations_in_order_do_the_same_and_can_be_run_again(server):
     engine = server("steps")
     run_sql(engine, *NUMBERED)
-    assert NUMBERED[-1] == "009_app_role.sql" and schema_problems(engine) == []
+    assert NUMBERED[-1] == "010_attendance_codes.sql" and schema_problems(engine) == []
     run_sql(engine, *NUMBERED)
     assert schema_problems(engine) == []
+    engine.dispose()
+
+
+def test_a_database_without_migration_010_is_told_to_apply_it_and_010_adds_the_unique_code_index(server):
+    engine = server("m010")
+    run_sql(engine, *NUMBERED[:-1])
+
+    assert schema_problems(engine) == [
+        "table user_management has no column attendance_code",
+        "user_management has no uq_user_management_attendance_code index (migration 010)",
+    ]
+    run_sql(engine, "010_attendance_codes.sql")
+    indexes = {index["name"]: index for index in inspect(engine).get_indexes("user_management")}
+    assert schema_problems(engine) == []
+    assert indexes["uq_user_management_attendance_code"]["unique"] and indexes["uq_user_management_attendance_code"]["column_names"] == ["attendance_code"]
+    engine.dispose()
+
+
+def test_the_backfill_refuses_without_migration_010_and_fills_only_empty_codes_after_it(server):
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("backfill_attendance_codes", MIGRATIONS.parent / "scripts" / "backfill_attendance_codes.py")
+    backfill = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(backfill)
+    engine = server("backfill")
+    run_sql(engine, *NUMBERED[:-1])
+    with engine.begin() as connection:
+        connection.execute(text("INSERT INTO user_management (person_code, full_name, person_type) VALUES ('A-1', 'Asha', 'student'), ('A-2', 'Bala', 'admin')"))
+    said = []
+
+    assert backfill.run(engine, out=said.append) == 1 and "010_attendance_codes.sql" in said[-1]
+    run_sql(engine, "010_attendance_codes.sql")
+    with engine.begin() as connection:
+        connection.execute(text("UPDATE user_management SET attendance_code = 'K7M29QXD' WHERE person_code = 'A-1'"))
+    assert backfill.run(engine, out=said.append) == 0
+    with engine.connect() as connection:
+        codes = dict(connection.execute(text("SELECT person_code, attendance_code FROM user_management")).all())
+    assert codes["A-1"] == "K7M29QXD" and len(codes["A-2"]) == 8 and codes["A-2"] != "K7M29QXD"
+    assert not any(code in line for line in said for code in codes.values())
     engine.dispose()
 
 

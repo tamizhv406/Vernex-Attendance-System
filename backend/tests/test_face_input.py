@@ -122,6 +122,13 @@ def test_an_enrollment_does_not_start_without_consent(client, student, query):
         assert db.query(FaceEnrollment).count() == 0
 
 
+def test_the_consent_message_fits_staff_and_members_as_well_as_students(client, student):
+    answer = client.post(f"/face/enrollment/start/{student}")
+
+    assert answer.status_code == 400
+    assert answer.json()["detail"] == "Confirm that the person (or, for a minor, a parent or guardian) agreed to face enrollment."
+
+
 def test_with_consent_it_starts_and_the_audit_log_says_so(client, student):
     from app.models.audit_log import AuditLog
 

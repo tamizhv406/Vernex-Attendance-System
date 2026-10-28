@@ -30,7 +30,9 @@ def _seed_course_batch(db_session):
     return course, batch
 
 
-def test_non_student_can_be_marked_present_despite_no_course_or_batch(db_session):
+# Until Phase 2 of the staff upgrade, staff without a batch could be marked into any batch class. A
+# batch class is now for whoever is assigned to it; staff without a batch have a staff session.
+def test_staff_without_a_batch_are_refused_in_a_batch_class_and_marked_in_a_staff_session(db_session):
     course, batch = _seed_course_batch(db_session)
 
     session = AttendanceSession(
@@ -55,8 +57,13 @@ def test_non_student_can_be_marked_present_despite_no_course_or_batch(db_session
     db_session.commit()
     db_session.refresh(staff)
 
-    payload = AttendanceMark(session_id=session.id, person_id=staff.id)
-    record, message = mark_attendance(db_session, payload)
+    staff.person_type = "admin"
+    staff_session = AttendanceSession(session_name="Staff attendance", session_type="staff", session_date=date(2026, 1, 1))
+    db_session.add(staff_session)
+    db_session.commit()
+
+    assert mark_attendance(db_session, AttendanceMark(session_id=session.id, person_id=staff.id)) == (None, "Bob is not in this batch.")
+    record, message = mark_attendance(db_session, AttendanceMark(session_id=staff_session.id, person_id=staff.id))
 
     assert record is not None, f"expected staff to be marked present, got rejection: {message}"
     assert record.status in {"present", "late"}
@@ -95,7 +102,7 @@ def test_student_is_still_rejected_for_mismatched_course(db_session):
     record, message = mark_attendance(db_session, payload)
 
     assert record is None
-    assert message == "Person does not belong to this course"
+    assert message == "Alice is not in this batch."
 
 
 def _session_and_student(db_session):
@@ -289,10 +296,10 @@ def test_marking_absent_after_a_mark_changes_the_one_record_and_says_it_was_alre
     assert [(change["status"], change.get("previous_status")) for change in changes] == [(first, None), ("absent", first)]
 
 
-def test_marking_absent_someone_who_is_not_found_is_answered_as_before(client, visit):
+def test_marking_someone_who_is_not_found_is_404_by_either_route(client, visit):
+    # Until October 2026 mark-absent answered 200 with success false; a refusal is now the same for both.
     body = visit("member_visit")
 
-    answer = client.post("/attendance/mark-absent", json={**body, "person_id": 999})
-
-    assert (answer.status_code, answer.json()) == (200, {"success": False, "message": "Person not found", "data": None})
-    assert client.post("/attendance/mark", json={**body, "person_id": 999}).json() == {"detail": "Person not found"}
+    for route in ("/attendance/mark-absent", "/attendance/mark"):
+        answer = client.post(route, json={**body, "person_id": 999})
+        assert (answer.status_code, answer.json()) == (404, {"detail": "Person not found"})

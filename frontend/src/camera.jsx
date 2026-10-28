@@ -1,7 +1,7 @@
 // The camera: opening it, taking frames for the backend, and drawing what the backend said about them.
 import React, { useEffect, useRef, useState } from "react";
-import { CameraOff, Loader2, RefreshCw, SwitchCamera } from "lucide-react";
-import { facesThePerson } from "./lib/camera";
+import { ArrowBigLeft, ArrowBigRight, CameraOff, Loader2, RefreshCw, SwitchCamera } from "lucide-react";
+import { facesThePerson, turnArrow } from "./lib/camera";
 import { titleCase } from "./lib/format";
 
 export function useCamera(active, initialFacing = "environment") {
@@ -51,9 +51,23 @@ export function useCamera(active, initialFacing = "environment") {
     canvas.getContext("2d").drawImage(video, 0, 0, canvas.width, canvas.height);
     canvas.toBlob(blob => resolve(blob ? { blob, width: canvas.width, height: canvas.height } : null), "image/jpeg", 0.8);
   });
+  // The current picture, read at once into a canvas at most maxWidth wide, for decoding on this
+  // device (QR codes): { canvas, imageData }, or null while there is no picture. Nothing is uploaded.
+  const frameCanvas = useRef(null);
+  const readFrame = (maxWidth = 640) => {
+    const video = videoRef.current;
+    if (!video || !video.videoWidth) return null;
+    const scale = Math.min(1, maxWidth / video.videoWidth);
+    const canvas = frameCanvas.current || (frameCanvas.current = document.createElement("canvas"));
+    canvas.width = Math.round(video.videoWidth * scale);
+    canvas.height = Math.round(video.videoHeight * scale);
+    const context = canvas.getContext("2d", { willReadFrequently: true });
+    context.drawImage(video, 0, 0, canvas.width, canvas.height);
+    return { canvas, imageData: context.getImageData(0, 0, canvas.width, canvas.height) };
+  };
   const flip = () => setFacing(current => current === "environment" ? "user" : "environment");
   const retry = () => setAttempt(current => current + 1);
-  return { videoRef, error, capture, flip, retry, facing, ready, setReady, facesPerson: facesThePerson(opened, facing) };
+  return { videoRef, error, capture, readFrame, flip, retry, facing, ready, setReady, facesPerson: facesThePerson(opened, facing) };
 }
 
 // Why the scanner could not judge a face at all.
@@ -73,6 +87,8 @@ export function faceVerdict(face) {
     case "challenge": return face.challenge?.action === "turn"
       ? { tone: "info", name, label: `Turn head to YOUR ${String(face.challenge.direction || "").toUpperCase()}`, identity: "Matched", liveness: "Passed", ask: true }
       : { tone: "info", name, label: "Hold still, facing the camera", identity: "Matched", liveness: "Passed", ask: true };
+    // Turned the right way but the face changed shape (moved closer, further, or tilted). Not held against them.
+    case "challenge_retry": return { tone: "warning", name, label: "Try again: turn only your head", identity: "Matched", liveness: "Passed", note: face.message };
     case "challenge_failed": return { tone: "danger", name, label: "Wrong movement, wait", identity: "Matched", liveness: "Passed" };
     case "locked": return { tone: "danger", name, label: "Locked, mark by hand", identity: "Matched", liveness: "–" };
     case "liveness_uncertain": return { tone: "neutral", name: "Cannot verify", label: "Cannot confirm a real face", identity: "–", liveness: "Uncertain" };
@@ -109,7 +125,11 @@ export function CameraView({ camera, faces = [], frame, guide = false, mirror = 
         // with the same face while people move and the order of the list changes.
         const verdict = faceVerdict(face);
         const style = BOX[verdict.tone];
+        // The way the face on screen has to turn, when the backend asks for a turn.
+        const arrow = face.result === "challenge" && face.challenge?.action === "turn" ? turnArrow(face.challenge.direction, mirrored) : null;
+        const Arrow = arrow === "left" ? ArrowBigLeft : ArrowBigRight;
         return <div key={face.track_id ?? index} className={`absolute rounded-xl border-2 transition-all duration-150 ease-linear ${style.border}`} style={{ left: percent(mirrored ? frame.width - face.box.x - face.box.w : face.box.x, frame.width), top: percent(face.box.y, frame.height), width: percent(face.box.w, frame.width), height: percent(face.box.h, frame.height) }}>
+          {arrow && <span className={`absolute top-1/2 grid h-12 w-12 -translate-y-1/2 place-items-center rounded-full text-white shadow-float ${style.chip} ${arrow === "left" ? "right-full mr-2" : "left-full ml-2"}`} aria-hidden="true"><Arrow size={30} className="animate-pulse" fill="currentColor" /></span>}
           <span className={`absolute left-0 top-full mt-1 whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-semibold text-white shadow ${style.chip}`}>{verdict.name ? `${verdict.name}: ` : ""}{verdict.label}</span>
         </div>;
       })}

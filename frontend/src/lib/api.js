@@ -86,6 +86,12 @@ export function deletePerson(id) {
   return request(`/users/${id}`, { method: "DELETE" });
 }
 
+// A new attendance code for a person (their first one, or one that replaces a lost card's). The old
+// code and its QR stop working at once. Answers the person, with the new code.
+export function regenerateAttendanceCode(id) {
+  return request(`/users/${id}/attendance-code/regenerate`, { method: "POST" });
+}
+
 export function getCourses() {
   return request("/courses");
 }
@@ -162,6 +168,13 @@ export function markAttendance(data) {
   return request("/attendance/mark", { method: "POST", body: JSON.stringify(data) });
 }
 
+// A QR scanned (method "qr_scan") or a code typed ("code_entry") in a running session. Answers
+// { result: "marked" | "already_marked", attendance_status, person, record }; a refusal is an error
+// with the backend's sentence.
+export function markByCode(data) {
+  return request("/attendance/code/mark", { method: "POST", body: JSON.stringify(data) });
+}
+
 export function getAttendanceSessions(filters = {}) {
   return request(`/attendance/sessions${queryString(filters)}`);
 }
@@ -171,7 +184,7 @@ export function getSessionRecords(sessionId) {
 }
 
 // mode: "quick" or "guided" (five poses). Left out, the backend's FACE_ENROLL_MODE decides.
-// consent: the person enrolling confirmed that the student (or a parent or guardian) agreed; the
+// consent: the person enrolling confirmed that the person (or a parent or guardian) agreed; the
 // backend starts nothing without it and writes it into the audit log.
 export function startFaceEnrollment(personId, mode, consent) {
   return request(`/face/enrollment/start/${personId}${queryString({ mode, consent: consent ? "true" : undefined })}`, { method: "POST" });
@@ -185,8 +198,9 @@ export function getFaceEnrollmentStatus(personId) {
   return request(`/face/enrollment/status/${personId}`);
 }
 
-export function getEnrollmentUsers(courseId, batchId) {
-  return request(`/face/enrollment/users${queryString({ course_id: courseId, batch_id: batchId })}`);
+// personType: "student" (course and batch required), "admin" (staff) or "member" (both optional).
+export function getEnrollmentUsers({ personType, courseId, batchId } = {}) {
+  return request(`/face/enrollment/users${queryString({ person_type: personType, course_id: courseId, batch_id: batchId })}`);
 }
 
 export function sendEnrollmentFrame(formData) {

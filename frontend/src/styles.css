@@ -122,3 +122,23 @@
     background-size: 400% 100%;
   }
 }
+
+/* QR cards (pages/qrCards.jsx). The sheet is never seen on screen; while one is on the page, paper
+   shows it alone: ID-card size (85.6 x 54 mm), 2 columns and 5 rows to an A4 page, thin cut lines. */
+.qr-print { display: none; }
+@media print {
+  @page { size: A4; margin: 10mm; }
+  body:has(> .qr-print) { background: #fff !important; }
+  body:has(> .qr-print) > *:not(.qr-print) { display: none !important; }
+  .qr-print { display: block; color: #000; font-family: system-ui, sans-serif; }
+  .qr-page { display: grid; grid-template-columns: repeat(2, 85.6mm); grid-auto-rows: 54mm; column-gap: 4mm; row-gap: 1mm; break-after: page; }
+  .qr-page:last-child { break-after: auto; }
+  .qr-card { box-sizing: border-box; display: flex; gap: 3mm; align-items: center; justify-content: space-between; padding: 3mm 3.5mm; border: 0.2mm dashed #999; overflow: hidden; break-inside: avoid; }
+  .qr-card-text { min-width: 0; font-size: 8pt; line-height: 1.35; }
+  .qr-card-text p { margin: 0; overflow-wrap: anywhere; }
+  .qr-card-brand { font-size: 7pt; font-weight: 800; letter-spacing: 0.12em; text-transform: uppercase; color: #444; margin-bottom: 1.5mm !important; }
+  .qr-card-name { font-size: 10.5pt; font-weight: 700; line-height: 1.2; margin-bottom: 1mm !important; }
+  .qr-card-code { flex: none; display: flex; flex-direction: column; align-items: center; }
+  .qr-card-qr { width: 38mm; height: 38mm; }
+  .qr-card-code p { margin: 0.5mm 0 0; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 9pt; font-weight: 700; letter-spacing: 0.08em; }
+}
